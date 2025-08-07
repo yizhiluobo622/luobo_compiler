@@ -1,10 +1,65 @@
 use crate::frontend::span::Span;
 
+/// 语义信息
+#[derive(Debug, Clone)]
+pub struct SemanticInfo {
+    /// 推导出的类型
+    pub deduced_type: Option<Type>,
+    /// 符号名称（如果是标识符）
+    pub symbol_name: Option<String>,
+    /// 语义错误
+    pub semantic_errors: Vec<String>,
+    /// 是否已进行语义分析
+    pub analyzed: bool,
+}
+
+impl SemanticInfo {
+    /// 创建空的语义信息
+    pub fn new() -> Self {
+        Self {
+            deduced_type: None,
+            symbol_name: None,
+            semantic_errors: Vec::new(),
+            analyzed: false,
+        }
+    }
+    
+    /// 设置推导类型
+    pub fn set_deduced_type(&mut self, typ: Type) {
+        self.deduced_type = Some(typ);
+        self.analyzed = true;
+    }
+    
+    /// 设置符号名称
+    pub fn set_symbol_name(&mut self, name: String) {
+        self.symbol_name = Some(name);
+        self.analyzed = true;
+    }
+    
+    /// 添加语义错误
+    pub fn add_error(&mut self, error: String) {
+        self.semantic_errors.push(error);
+        self.analyzed = true;
+    }
+    
+    /// 检查是否有语义错误
+    pub fn has_errors(&self) -> bool {
+        !self.semantic_errors.is_empty()
+    }
+    
+    /// 获取推导类型
+    pub fn get_deduced_type(&self) -> Option<&Type> {
+        self.deduced_type.as_ref()
+    }
+}
+
 /// 抽象语法树节点
 #[derive(Debug, Clone)]
 pub struct Ast {
     pub kind: AstKind,
     pub span: Span,
+    /// 语义信息
+    pub semantic_info: SemanticInfo,
 }
 
 /// AST节点类型
@@ -186,7 +241,7 @@ pub enum UnaryOperator {
 }
 
 /// 类型系统
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     IntType,
     FloatType,
@@ -209,7 +264,7 @@ pub enum Type {
 impl Ast {
     /// 创建新的AST节点
     pub fn new(kind: AstKind, span: Span) -> Self {
-        Self { kind, span }
+        Self { kind, span, semantic_info: SemanticInfo::new() }
     }
     
     /// 获取节点类型
