@@ -73,6 +73,11 @@ impl<'a> Lexer<'a> {
             file_id,
         }
     }
+    
+    /// 获取源代码
+    pub fn get_source(&self) -> &'a str {
+        self.input
+    }
 
     // 获取当前字符（可能为 None，只有在超出索引时）
     fn current_char(&self) -> Option<char> {
