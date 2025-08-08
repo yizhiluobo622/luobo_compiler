@@ -3,5 +3,9 @@ name = "luobo_compiler"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "test_ast_batch"
+path = "src/test_ast_batch.rs"
+
 [dependencies]
 

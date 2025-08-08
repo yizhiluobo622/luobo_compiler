@@ -8,7 +8,7 @@ pub fn reconstruct_source(input: &str) -> String {
     let mut result = String::new();
     
     loop {
-        let (tok, text) = lexer.next_token_with_text();
+        let (tok, text) = lexer.parse_token();
         
         match tok {
             Token::EOF => {
@@ -56,7 +56,7 @@ pub fn show_tokens(input: &str) {
     
     println!("=== Token Details ===");
     loop {
-        let (tok, text) = lexer.next_token_with_text();
+        let (tok, text) = lexer.parse_token();
         
         match tok {
             Token::EOF => {

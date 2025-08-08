@@ -164,9 +164,18 @@ impl FuncChecker {
                         // 进入复合语句作用域
                         symbol_table.enter_scope(&format!("compound_{}", function_name));
                         
-                        // 检查复合语句中的所有语句
+                        // 第一遍：处理所有变量声明
                         for stmt in statements {
-                            self.check_statement_in_function(stmt, return_type, symbol_table, type_system, errors);
+                            if let AstKind::VariableDeclaration { .. } = &stmt.kind {
+                                self.check_statement_in_function(stmt, return_type, symbol_table, type_system, errors);
+                            }
+                        }
+                        
+                        // 第二遍：处理所有其他语句
+                        for stmt in statements {
+                            if !matches!(&stmt.kind, AstKind::VariableDeclaration { .. }) {
+                                self.check_statement_in_function(stmt, return_type, symbol_table, type_system, errors);
+                            }
                         }
                         
                         // 注意：不退出复合语句作用域，保持局部变量在符号表中
@@ -207,9 +216,9 @@ impl FuncChecker {
         errors: &mut Vec<SemanticError>,
     ) {
         match &stmt.kind {
-            AstKind::VariableDeclaration { variable_name, variable_type, initial_value } => {
+            AstKind::VariableDeclaration { variable_name, variable_type, initial_value, is_const } => {
                 // 处理变量声明
-                if let Err(msg) = symbol_table.add_variable(variable_name, variable_type.clone(), stmt.span.clone()) {
+                if let Err(msg) = symbol_table.add_variable(variable_name, variable_type.clone(), stmt.span.clone(), *is_const) {
                     errors.push(SemanticError {
                         message: msg,
                         span: stmt.span.clone(),
@@ -217,10 +226,9 @@ impl FuncChecker {
                     });
                 }
                 
-                // 检查初始值
-                if let Some(init_expr) = initial_value {
-                    self.check_initial_value(init_expr, variable_type, symbol_table, type_system, errors);
-                }
+                // 使用变量检查器执行完整的声明检查（含数组初始化等）
+                let var_checker = crate::frontend::SemanticAnalyzer::checkers::var_checker::VarChecker::new();
+                var_checker.check_variable_declaration(stmt, symbol_table, type_system, errors);
             }
             AstKind::Statement(statement) => {
                 match statement {
@@ -424,25 +432,16 @@ impl FuncChecker {
     fn check_expression_statement(
         &self,
         expression: &Ast,
-        symbol_table: &SymbolTable,
+        symbol_table: &mut SymbolTable,
         type_system: &TypeSystem,
         errors: &mut Vec<SemanticError>,
     ) {
+
         match &expression.kind {
             AstKind::Expression(expr) => {
-                // 检查表达式类型推导
-                match type_system.deduce_expression_type(expr, symbol_table) {
-                    Ok(_) => {
-                        // 表达式类型推导成功，不需要额外检查
-                    }
-                    Err(msg) => {
-                        errors.push(SemanticError {
-                            message: format!("无法推导表达式类型：{}", msg),
-                            span: expression.span.clone(),
-                            error_type: crate::frontend::SemanticAnalyzer::sema::SemanticErrorType::TypeMismatch,
-                        });
-                    }
-                }
+                // 使用表达式检查器进行完整的表达式检查
+                let expr_checker = crate::frontend::SemanticAnalyzer::checkers::expr_checker::ExprChecker::new();
+                expr_checker.check_expression(expression, symbol_table, type_system, errors);
             }
             _ => {
                 errors.push(SemanticError {
@@ -474,9 +473,11 @@ impl FuncChecker {
             AstKind::Expression(expr) => {
                 match type_system.deduce_expression_type(expr, symbol_table) {
                     Ok(expr_type) => {
-                        if !type_system.is_type_compatible(&expr_type, &Type::BoolType) {
+                        // 允许以 IntType 作为布尔（C 风格），也兼容显式 BoolType
+                        let is_boolean_like = matches!(expr_type, Type::IntType | Type::BoolType);
+                        if !is_boolean_like {
                             errors.push(SemanticError {
-                                message: format!("条件表达式类型不匹配：期望布尔类型，实际{:?}", expr_type),
+                                message: format!("条件表达式类型不匹配：期望布尔/整型，实际{:?}", expr_type),
                                 span: condition.span.clone(),
                                 error_type: crate::frontend::SemanticAnalyzer::sema::SemanticErrorType::TypeMismatch,
                             });

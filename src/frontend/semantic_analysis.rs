@@ -259,6 +259,9 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
             if let Some(var_type) = symbol_table.get_variable_type(name) {
                 ast.semantic_info.set_deduced_type(var_type);
             } else {
+                // 添加调试信息
+                println!("🔍 语义信息填充时查找变量 '{}' 失败", name);
+                symbol_table.debug_check_variable(name);
                 ast.semantic_info.add_error(format!("未定义的变量: {}", name));
             }
             // 设置符号名称
@@ -426,12 +429,15 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
                             }
                             crate::frontend::ast::BinaryOperator::LogicalAnd |
                             crate::frontend::ast::BinaryOperator::LogicalOr => {
-                                // 逻辑运算：只支持布尔类型
+                                // 逻辑运算：C 风格，接受 int/bool，结果视为 bool
                                 match (left_type, right_type) {
-                                    (crate::frontend::ast::Type::BoolType, crate::frontend::ast::Type::BoolType) => 
+                                    (crate::frontend::ast::Type::BoolType, crate::frontend::ast::Type::BoolType)
+                                    | (crate::frontend::ast::Type::IntType, crate::frontend::ast::Type::IntType)
+                                    | (crate::frontend::ast::Type::BoolType, crate::frontend::ast::Type::IntType)
+                                    | (crate::frontend::ast::Type::IntType, crate::frontend::ast::Type::BoolType) =>
                                         crate::frontend::ast::Type::BoolType,
                                     _ => {
-                                        ast.semantic_info.add_error(format!("逻辑运算只支持布尔类型：{:?} {:?} {:?}", left_type, operator, right_type));
+                                        ast.semantic_info.add_error(format!("逻辑运算不支持的类型组合：{:?} {:?} {:?}", left_type, operator, right_type));
                                         crate::frontend::ast::Type::BoolType
                                     }
                                 }
@@ -455,11 +461,11 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
                     if let Some(operand_type) = operand_type {
                         let result_type = match operator {
                             crate::frontend::ast::UnaryOperator::LogicalNot => {
-                                // 逻辑非：只支持布尔类型
+                                // 逻辑非：C 风格，接受 int/bool，结果 bool
                                 match operand_type {
-                                    crate::frontend::ast::Type::BoolType => crate::frontend::ast::Type::BoolType,
+                                    crate::frontend::ast::Type::BoolType | crate::frontend::ast::Type::IntType => crate::frontend::ast::Type::BoolType,
                                     _ => {
-                                        ast.semantic_info.add_error(format!("逻辑非运算只支持布尔类型：!{:?}", operand_type));
+                                        ast.semantic_info.add_error(format!("逻辑非运算不支持的类型：!{:?}", operand_type));
                                         crate::frontend::ast::Type::BoolType
                                     }
                                 }
@@ -521,6 +527,48 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
                 Expression::ArrayAccess { array, index } => {
                     fill_semantic_info_recursive(array, symbol_table, type_system);
                     fill_semantic_info_recursive(index, symbol_table, type_system);
+                    
+                    // 推导数组访问的结果类型
+                    if let Some(array_type) = array.semantic_info.deduced_type.as_ref() {
+                        match array_type {
+                            crate::frontend::ast::Type::ArrayType { element_type, .. } => {
+                                ast.semantic_info.set_deduced_type((**element_type).clone());
+                            }
+                            crate::frontend::ast::Type::PointerType { target_type } => {
+                                ast.semantic_info.set_deduced_type((**target_type).clone());
+                            }
+                            _ => {
+                                ast.semantic_info.add_error(format!("只能对数组或指针类型进行索引访问，实际类型：{:?}", array_type));
+                            }
+                        }
+                    } else {
+                        // 尝试从类型系统推导
+                        match type_system.deduce_ast_type(array, symbol_table) {
+                            Ok(array_type) => {
+                                match array_type {
+                                    crate::frontend::ast::Type::ArrayType { element_type, .. } => {
+                                        ast.semantic_info.set_deduced_type(*element_type);
+                                    }
+                                    crate::frontend::ast::Type::PointerType { target_type } => {
+                                        ast.semantic_info.set_deduced_type(*target_type);
+                                    }
+                                    _ => {
+                                        ast.semantic_info.add_error(format!("只能对数组或指针类型进行索引访问，实际类型：{:?}", array_type));
+                                    }
+                                }
+                            }
+                            Err(msg) => {
+                                ast.semantic_info.add_error(format!("无法推导数组表达式类型：{}", msg));
+                            }
+                        }
+                    }
+                    
+                    // 检查索引类型
+                    if let Some(index_type) = index.semantic_info.deduced_type.as_ref() {
+                        if !matches!(index_type, crate::frontend::ast::Type::IntType) {
+                            ast.semantic_info.add_error(format!("数组索引必须是整数类型，实际类型：{:?}", index_type));
+                        }
+                    }
                 }
                 Expression::MemberAccess { object, .. } => {
                     fill_semantic_info_recursive(object, symbol_table, type_system);

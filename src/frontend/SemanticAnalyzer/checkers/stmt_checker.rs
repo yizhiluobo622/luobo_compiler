@@ -161,10 +161,10 @@ impl StmtChecker {
             AstKind::Expression(expr) => {
                 match type_system.deduce_expression_type(expr, symbol_table) {
                     Ok(expr_type) => {
-                        // 条件表达式应该是int类型（布尔值用int表示）
-                        if !matches!(expr_type, Type::IntType) {
+                        // 允许 IntType 或 BoolType 作为条件
+                        if !matches!(expr_type, Type::IntType | Type::BoolType) {
                             errors.push(SemanticError {
-                                message: format!("条件表达式类型错误：期望int，实际{:?}", expr_type),
+                                message: format!("条件表达式类型错误：期望 int/bool，实际{:?}", expr_type),
                                 span: condition.span.clone(),
                                 error_type: crate::frontend::SemanticAnalyzer::sema::SemanticErrorType::TypeMismatch,
                             });

@@ -46,7 +46,7 @@ impl Span {
 }
 
 /// 带位置信息的 Token
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct LocatedToken {
     pub token: Token,
     pub span: Span,

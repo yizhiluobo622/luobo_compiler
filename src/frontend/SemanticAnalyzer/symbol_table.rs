@@ -28,6 +28,8 @@ pub struct Symbol {
     pub is_defined: bool,
     /// 函数参数列表（仅对函数有效）
     pub parameters: Option<Vec<Type>>,
+    /// 是否为常量（仅对变量/参数有效）
+    pub is_const: bool,
 }
 
 /// 作用域
@@ -192,7 +194,7 @@ impl SymbolTable {
     /// # 返回
     /// * `Ok(())` - 添加成功
     /// * `Err(String)` - 重复定义错误
-    pub fn add_variable(&mut self, name: &str, data_type: Type, span: Span) -> Result<(), String> {
+    pub fn add_variable(&mut self, name: &str, data_type: Type, span: Span, is_const: bool) -> Result<(), String> {
         let symbol = Symbol {
             name: name.to_string(),
             kind: SymbolKind::Variable,
@@ -200,6 +202,7 @@ impl SymbolTable {
             span,
             is_defined: true,
             parameters: None,
+            is_const,
         };
         
         self.add_symbol(symbol)
@@ -226,6 +229,7 @@ impl SymbolTable {
             span,
             is_defined: true,
             parameters: Some(parameters),
+            is_const: false,
         };
         
         self.add_symbol(symbol)
@@ -251,6 +255,7 @@ impl SymbolTable {
             span,
             is_defined: true,
             parameters: None,
+            is_const: false,
         };
         
         self.add_symbol(symbol)
@@ -371,7 +376,7 @@ impl SymbolTable {
     /// * `None` - 未找到变量
     pub fn get_variable_type(&self, variable_name: &str) -> Option<Type> {
         if let Some(symbol) = self.lookup_symbol(variable_name) {
-            if symbol.kind == SymbolKind::Variable {
+            if symbol.kind == SymbolKind::Variable || symbol.kind == SymbolKind::Parameter {
                 return Some(symbol.data_type.clone());
             }
         }
@@ -391,5 +396,17 @@ impl SymbolTable {
         }
         println!("当前作用域: {}", self.get_current_scope_name());
         println!("作用域深度: {}", self.get_scope_depth());
+    }
+    
+    /// 调试方法：检查变量是否存在
+    pub fn debug_check_variable(&self, name: &str) -> bool {
+        if let Some(symbol) = self.lookup_symbol(name) {
+            println!("✅ 找到变量 '{}': {:?}", name, symbol.data_type);
+            true
+        } else {
+            println!("❌ 未找到变量 '{}'", name);
+            self.print_symbol_table();
+            false
+        }
     }
 }

@@ -17,17 +17,15 @@ fn main() {
     let lexer = Lexer::new(&src);
     let mut parser = Parser::new(lexer);
     
-    // 添加超时保护
-    let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        parser.parse()
-    }));
+    let parse_result = parser.parse();
+    println!("Analyzing");
     
     match parse_result {
-        Ok(Ok(ast)) => {
+        Ok(ast) => {
             println!("✅ Syntax analysis successful!");
             debug_parser::show_ast_dot(&ast, "real_ast.dot");
             
-            
+            // 恢复语义分析部分
             println!("\n🔍 Analyzing");
             
             // 使用新的带语义信息的AST功能
@@ -61,9 +59,9 @@ fn main() {
                 }
             }
         }
-        Ok(Err(errors)) => {
+        Err(errors) => {
             println!("❌ Syntax analysis failed");
-            println!("Error: {}", errors.len());
+            println!("Error count: {}", errors.len());
             for (i, error) in errors.iter().enumerate() {
                 println!("Error {}: {} Position: 第{}行第{}列", 
                     i + 1, 
@@ -72,9 +70,6 @@ fn main() {
                     error.span.column
                 );
             }
-        }
-        Err(_) => {
-            println!("❌ Panic!");
         }
     }
 }

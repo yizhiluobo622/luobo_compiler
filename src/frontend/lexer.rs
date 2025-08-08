@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     KeywordInt,
     KeywordFloat,
@@ -81,7 +81,10 @@ impl<'a> Lexer<'a> {
 
     // 获取当前字符（可能为 None，只有在超出索引时）
     fn current_char(&self) -> Option<char> {
-        self.input.chars().nth(self.pos)
+        if self.pos >= self.input.len() {
+            return None;
+        }
+        self.input[self.pos..].chars().next()
     }
 
     fn advance(&mut self) {
@@ -109,37 +112,49 @@ impl<'a> Lexer<'a> {
     
 
     fn skip_block_comment(&mut self) {
-        // 标准 C 语言注释：不支持嵌套
+        // 已经确认是 /* 开头，跳过这两个字符
+        self.advance(); // 跳过 '/'
+        self.advance(); // 跳过 '*'
+         
         while let Some(c) = self.current_char() {
             if c == '*' {
-                if let Some('/') = self.peek_next_char() {
-                    self.advance(); // 跳过 '*'
-                    self.advance(); // 跳过 '/'
-                    return; // 找到注释结束，退出
+                if let Some(next) = self.peek_next_char() {
+                    if next == '/' {
+                        // 遇到第一个 */，注释结束
+                        self.advance(); // 跳过 '*'
+                        self.advance(); // 跳过 '/'
+                        return;
+                    }
                 }
             }
-            self.advance(); // 跳过其他字符
+            // 跳过所有其他字符（包括内部的 /* 和 */）
+            self.advance();
         }
-        // 如果到达文件末尾还没找到 */，说明注释未闭合
-        // 这里可以选择 panic 或者继续（我们选择继续）
+    
+        // 如果到达文件末尾还没找到 */, 说明注释未闭合
+        panic!("Unclosed block comment");
     }
+
+    
 
     fn skip_line_comment(&mut self) {
         // 检查是否真的是 "//"（避免误判单个 "/"）
         if let Some('/') = self.current_char() {
-            if let Some('/') = self.peek_next_char() {
-                // 检查下一个字符
-                self.advance(); // 跳过第一个 '/'
-                self.advance(); // 跳过第二个 '/'
-
-                // 一直前进直到行尾（'\n'）或字符串结束
-                while let Some(c) = self.current_char() {
-                    if c == '\n' {
-                        self.advance(); // 跳过换行符
-                        break; // 遇到换行符，注释结束
+            if let Some(next) = self.peek_next_char() {
+                if next == '/' {
+                    // 跳过 "//"
+                    self.advance(); // 跳过第一个 '/'
+                    self.advance(); // 跳过第二个 '/'
+                    // 一直前进直到行尾（'\n'）或字符串结束
+                    while let Some(c) = self.current_char() {
+                        if c == '\n' {
+                            self.advance(); // 跳过换行符
+                            break; // 遇到换行符，注释结束
+                        }
+                        self.advance(); // 跳过注释内容
                     }
-                    self.advance(); // 跳过注释内容
                 }
+                // 如果不是 "//"，则继续后续的 Token 解析
             }
         }
     }
@@ -149,17 +164,18 @@ impl<'a> Lexer<'a> {
     /// 正式接口：给 Parser 使用，只返回 Token
     #[allow(dead_code)]
     pub fn next_token(&mut self) -> Token {
-        let (token, _) = self.next_token_with_text();
+        let (token, _) = self.parse_token();
         token
     }
 
     /// 带位置信息的 Token 接口
     pub fn next_located_token(&mut self) -> crate::frontend::span::LocatedToken {
-        // 先跳过空白字符和注释，但不记录位置
+        
         loop {
             self.skip_whitespace();
+            
 
-            // 如果遇到注释，跳过它们
+            
             let c = match self.current_char() {
                 Some(ch) => ch,
                 None => {
@@ -175,11 +191,15 @@ impl<'a> Lexer<'a> {
             };
 
             if c == '/' {
+                
                 if let Some(next) = self.peek_next_char() {
+                    
                     if next == '/' {
+                        
                         self.skip_line_comment();
                         continue; // 继续下一轮循环，重新检测 token
                     } else if next == '*' {
+                        
                         self.skip_block_comment();
                         continue; // 继续下一轮循环，重新检测 token
                     }
@@ -209,7 +229,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// 解析单个 Token（不处理空白字符和注释）
-    fn parse_token(&mut self) -> (Token, String) {
+    pub fn parse_token(&mut self) -> (Token, String) {
         let start_pos = self.pos;
         let c = match self.current_char() {
             Some(ch) => ch,
@@ -226,6 +246,12 @@ impl<'a> Lexer<'a> {
 
             // 数字
             '0'..='9' => {
+                let tok = self.read_number();
+                let text: String = self.input.chars().skip(start_pos).take(self.pos - start_pos).collect();
+                (tok, text)
+            }
+            // 以点开头的浮点数
+            '.' => {
                 let tok = self.read_number();
                 let text: String = self.input.chars().skip(start_pos).take(self.pos - start_pos).collect();
                 (tok, text)
@@ -374,195 +400,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// 调试接口：返回 Token 和原文字符串，用于调试
-    pub fn next_token_with_text(&mut self) -> (Token, String) {
-        loop {
-            self.skip_whitespace();
 
-            // 如果遇到注释，跳过它们
-            let c = match self.current_char() {
-                Some(ch) => ch,
-                None => return (Token::EOF, "".to_string()),
-            };
-
-            if c == '/' {
-                if let Some(next) = self.peek_next_char() {
-                    if next == '/' {
-                        self.skip_line_comment();
-                        continue; // 继续下一轮循环，重新检测 token
-                    } else if next == '*' {
-                        self.skip_block_comment();
-                        continue; // 继续下一轮循环，重新检测 token
-                    }
-                }
-            }
-
-            // 如果不是注释，跳出循环，开始真正解析 token
-            break;
-        }
-
-        let start_pos = self.pos; // 记录当前 Token 的起始位置
-        // 下面是原来的 token 识别逻辑
-        let c = match self.current_char() {
-            Some(ch) => ch,
-            None => return (Token::EOF, "".to_string()),
-        };
-
-        match c {
-            // 标识符或关键字
-            'a'..='z' | 'A'..='Z' | '_' => {
-                let tok = self.read_identifier_or_keyword();
-                let text: String = self.input.chars().skip(start_pos).take(self.pos - start_pos).collect();
-                (tok, text)
-            }
-
-            // 数字
-            '0'..='9' => {
-                let tok = self.read_number();
-                let text: String = self.input.chars().skip(start_pos).take(self.pos - start_pos).collect();
-                (tok, text)
-            }
-
-            // 符号
-            '+' => {
-                self.advance();
-                (Token::Plus, "+".to_string())
-            }
-            '-' => {
-                self.advance();
-                (Token::Minus, "-".to_string())
-            }
-            '*' => {
-                self.advance();
-                (Token::Star, "*".to_string())
-            }
-            '/' => {
-                self.advance();
-                (Token::Slash, "/".to_string())
-            }
-            '%' => {
-                self.advance();
-                (Token::Percent, "%".to_string())
-            }
-            '(' => {
-                self.advance();
-                (Token::LParen, "(".to_string())
-            }
-            ')' => {
-                self.advance();
-                (Token::RParen, ")".to_string())
-            }
-            '{' => {
-                self.advance();
-                (Token::LBrace, "{".to_string())
-            }
-            '}' => {
-                self.advance();
-                (Token::RBrace, "}".to_string())
-            }
-            ';' => {
-                self.advance();
-                (Token::Semicolon, ";".to_string())
-            }
-            '[' => {
-                self.advance();
-                (Token::LBracket, "[".to_string())
-            }
-            ']' => {
-                self.advance();
-                (Token::RBracket, "]".to_string())
-            }
-            ',' => {
-                self.advance();
-                (Token::Comma, ",".to_string())
-            }
-
-            '=' => {
-                self.advance();
-                if let Some(next) = self.current_char() {
-                    if next == '=' {
-                        self.advance();
-                        (Token::DoubleEqual, "==".to_string())
-                    } else {
-                        (Token::Equal, "=".to_string())
-                    }
-                } else {
-                    (Token::Equal, "=".to_string())
-                }
-            }
-            '!' => {
-                self.advance();
-                if let Some(next) = self.current_char() {
-                    if next == '=' {
-                        self.advance();
-                        (Token::NotEqual, "!=".to_string())
-                    } else {
-                        (Token::Bang, "!".to_string()) // 单独的 !
-                    }
-                } else {
-                    (Token::Bang, "!".to_string())
-                }
-            }
-            '<' => {
-                self.advance();
-                if let Some(next) = self.current_char() {
-                    if next == '=' {
-                        self.advance();
-                        (Token::LessEqual, "<=".to_string())
-                    } else {
-                        (Token::Less, "<".to_string())
-                    }
-                } else {
-                    (Token::Less, "<".to_string())
-                }
-            }
-            '>' => {
-                self.advance();
-                if let Some(next) = self.current_char() {
-                    if next == '=' {
-                        self.advance();
-                        (Token::GreaterEqual, ">=".to_string())
-                    } else {
-                        (Token::Greater, ">".to_string())
-                    }
-                } else {
-                    (Token::Greater, ">".to_string())
-                }
-            }
-            '&' => {
-                self.advance();
-                if let Some(next) = self.current_char() {
-                    if next == '&' {
-                        self.advance();
-                        (Token::AndAnd, "&&".to_string())
-                    } else {
-                        panic!("Unexpected character after '&': {}", next)
-                    }
-                } else {
-                    panic!("Unexpected character: '&'");
-                }
-            }
-            '|' => {
-                self.advance();
-                if let Some(next) = self.current_char() {
-                    if next == '|' {
-                        self.advance();
-                        (Token::OrOr, "||".to_string())
-                    } else {
-                        panic!("Unexpected character after '|': {}", next)
-                    }
-                } else {
-                    panic!("Unexpected character: '|'");
-                }
-            }
-
-            // 这里可以继续加其他字符实现
-
-            _ => {
-                self.advance();
-                panic!("Unexpected character: {}", c)
-            }
-        }
-    }
 
     fn read_identifier_or_keyword(&mut self) -> Token {
         let mut chars = Vec::new();
@@ -598,6 +436,51 @@ impl<'a> Lexer<'a> {
         let mut is_hex = false;
         let mut is_octal = false;
 
+        // 检查是否以点开头（如 .0, .5）
+        if let Some('.') = self.current_char() {
+            has_dot = true;
+            self.advance(); // 跳过 '.'
+            
+            // 读取小数部分
+            while let Some(c) = self.current_char() {
+                if c.is_ascii_digit() {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            
+            // 检查是否有指数部分
+            if let Some(c) = self.current_char() {
+                if c == 'e' || c == 'E' {
+                    has_e = true;
+                    self.advance();
+                    
+                    // 读取指数符号
+                    if let Some(sign) = self.current_char() {
+                        if sign == '+' || sign == '-' {
+                            self.advance();
+                        }
+                    }
+                    
+                    // 读取指数数字
+                    while let Some(c) = self.current_char() {
+                        if c.is_ascii_digit() {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            let num_str: String = self.input.chars().skip(start).take(self.pos - start).collect();
+            match num_str.parse::<f32>() {
+                Ok(f) => return Token::FloatConst(f),
+                Err(_) => return Token::FloatConst(0.0)
+            }
+        }
+
         // 检查是否是十六进制
         if let Some('0') = self.current_char() {
             if let Some(next) = self.peek_next_char() {
@@ -606,37 +489,105 @@ impl<'a> Lexer<'a> {
                     self.advance(); // 跳过 '0'
                     self.advance(); // 跳过 'x' 或 'X'
                     
-                    // 读取十六进制数字
+                    // 读取十六进制数字，支持浮点数格式
+                    let mut has_dot = false;
+                    let mut has_exponent = false;
+                    
+                    // 读取十六进制数字部分
                     while let Some(c) = self.current_char() {
                         if c.is_ascii_hexdigit() {
                             self.advance();
+                        } else if c == '.' && !has_dot && !has_exponent {
+                            has_dot = true;
+                            self.advance();
+                            // 继续读取小数点后的十六进制数字
+                            while let Some(c) = self.current_char() {
+                                if c.is_ascii_hexdigit() {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        } else if (c == 'p' || c == 'P') && !has_exponent {
+                            has_exponent = true;
+                            self.advance();
+                            
+                            // 读取指数符号
+                            if let Some(sign) = self.current_char() {
+                                if sign == '+' || sign == '-' {
+                                    self.advance();
+                                }
+                            }
+                            
+                            // 读取指数数字（十进制）
+                            while let Some(c) = self.current_char() {
+                                if c.is_ascii_digit() {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
                         } else {
                             break;
                         }
                     }
                     
                     let hex_str: String = self.input.chars().skip(start).take(self.pos - start).collect();
-                    match i32::from_str_radix(&hex_str[2..], 16) {
-                        Ok(i) => return Token::IntConst(i),
-                        Err(_) => return Token::IntConst(0),
+                    
+                    if has_dot || has_exponent {
+                        // 十六进制浮点数
+                        match hex_str.parse::<f32>() {
+                            Ok(f) => return Token::FloatConst(f),
+                            Err(_) => return Token::FloatConst(0.0)
+                        }
+                    } else {
+                        // 十六进制整数
+                        match i32::from_str_radix(&hex_str[2..], 16) {
+                            Ok(i) => return Token::IntConst(i),
+                            Err(_) => return Token::IntConst(0),
+                        }
                     }
                 } else if next.is_ascii_digit() && next != '0' {
-                    // 八进制
-                    is_octal = true;
-                    self.advance(); // 跳过 '0'
+                    // 检查是否后面跟着小数点，如果是则按十进制浮点数处理
+                    let mut temp_pos = self.pos + 1; // 跳过 '0'
+                    let mut has_dot_after_zero = false;
                     
-                    while let Some(c) = self.current_char() {
-                        if c >= '0' && c <= '7' {
-                            self.advance();
-                        } else {
-                            break;
+                    // 检查后续字符中是否有小数点
+                    while temp_pos < self.input.len() {
+                        let c = self.input.chars().nth(temp_pos);
+                        match c {
+                            Some('.') => {
+                                has_dot_after_zero = true;
+                                break;
+                            }
+                            Some(ch) if ch.is_ascii_digit() => {
+                                temp_pos += 1;
+                            }
+                            _ => break,
                         }
                     }
                     
-                    let oct_str: String = self.input.chars().skip(start).take(self.pos - start).collect();
-                    match i32::from_str_radix(&oct_str[1..], 8) {
-                        Ok(i) => return Token::IntConst(i),
-                        Err(_) => return Token::IntConst(0),
+                    if has_dot_after_zero {
+                        // 按十进制浮点数处理，不在这里返回，继续到后面的通用处理逻辑
+                        self.advance(); // 跳过 '0'
+                    } else {
+                        // 八进制
+                        is_octal = true;
+                        self.advance(); // 跳过 '0'
+                        
+                        while let Some(c) = self.current_char() {
+                            if c >= '0' && c <= '7' {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        
+                        let oct_str: String = self.input.chars().skip(start).take(self.pos - start).collect();
+                        match i32::from_str_radix(&oct_str[1..], 8) {
+                            Ok(i) => return Token::IntConst(i),
+                            Err(_) => return Token::IntConst(0),
+                        }
                     }
                 }
             }
@@ -700,10 +651,15 @@ impl<'a> Lexer<'a> {
 
     /// 辅助方法：查看下一个字符（不移动位置）
     fn peek_next_char(&self) -> Option<char> {
-        if self.pos + 1 < self.input.len() {
-            Some(self.input.chars().nth(self.pos + 1).unwrap())
-        } else {
-            None
+        // 直接使用字节位置来获取下一个字符
+        if self.pos >= self.input.len() {
+            return None;
         }
+        
+        // 从当前位置开始获取字符迭代器，跳过第一个字符
+        let remaining = &self.input[self.pos..];
+        let mut chars = remaining.chars();
+        chars.next(); // 跳过当前字符
+        chars.next()  // 返回下一个字符
     }
 }

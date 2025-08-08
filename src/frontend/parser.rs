@@ -24,6 +24,8 @@ pub struct Parser<'a> {
     lexer: Lexer<'a>,
     /// 当前正在处理的Token
     current_token: LocatedToken,
+    /// 待发出的额外声明（用于逗号分隔的多变量声明在局部作用域展开）
+    pending_declarations: Vec<Ast>,
 }
 
 /// 语法解析错误
@@ -52,13 +54,14 @@ impl<'a> Parser<'a> {
     /// 初始化完成的Parser实例
     pub fn new(mut lexer: Lexer<'a>) -> Self {
         let current_token = lexer.next_located_token();
-        let source_code = lexer.get_source().to_string();
         
         Self {
             lexer,
             current_token,
+            pending_declarations: Vec::new(),
         }
     }
+
     
     /// 解析完整的程序
     /// 
@@ -73,7 +76,7 @@ impl<'a> Parser<'a> {
     /// 
     /// # 返回
     /// * `Ok(Ast)` - 解析成功，返回程序的AST根节点
-    /// * `Err(Vec<ParseError>)` - 解析失败，返回语法错误列表
+    /// * `Err(Vec<ParseError>)` - 解析失败
     pub fn parse(&mut self) -> Result<Ast, Vec<ParseError>> {
         let mut functions = Vec::new();
         let mut global_variables = Vec::new();
@@ -81,15 +84,18 @@ impl<'a> Parser<'a> {
         
         // 解析所有顶级声明（函数和全局变量）
         while !self.is_eof() {
+            
             match &self.current_token.token {
-                Token::KeywordInt | Token::KeywordFloat | Token::KeywordVoid => {
+                Token::KeywordInt | Token::KeywordFloat | Token::KeywordVoid | Token::KeywordConst => {
                     // 遇到类型关键字，可能是函数定义或变量声明
                     match self.parse_top_level_declaration() {
-                        Ok(declaration) => {
-                            match declaration.kind {
-                                AstKind::Function { .. } => functions.push(declaration),
-                                AstKind::VariableDeclaration { .. } => global_variables.push(declaration),
-                                _ => {}
+                        Ok(declarations) => {
+                            for declaration in declarations {
+                                match &declaration.kind {
+                                    AstKind::Function { .. } => functions.push(declaration),
+                                    AstKind::VariableDeclaration { .. } => global_variables.push(declaration),
+                                    _ => {}
+                                }
                             }
                         }
                         Err(errors) => {
@@ -151,7 +157,7 @@ impl<'a> Parser<'a> {
     
     // ==================== 顶级声明解析 ====================
     
-    /// 解析顶级声明（函数定义或全局变量声明）
+    /// 解析顶级声明（函数定义或全局变量声明，支持逗号分隔的多变量声明）
     /// 
     /// 根据语法规则，顶级声明以类型关键字开始，后跟标识符
     /// 如果标识符后是'('，则为函数定义；如果是';'或'='，则为变量声明
@@ -159,14 +165,14 @@ impl<'a> Parser<'a> {
     /// 支持错误恢复：遇到解析错误时，跳过当前声明继续解析
     /// 
     /// # 返回
-    /// * `Ok(Ast)` - 解析成功，返回函数或变量声明的AST节点
+    /// * `Ok(Vec<Ast>)` - 解析成功，返回一个或多个顶级声明节点
     /// * `Err(Vec<ParseError>)` - 解析失败
-    fn parse_top_level_declaration(&mut self) -> Result<Ast, Vec<ParseError>> {
+    fn parse_top_level_declaration(&mut self) -> Result<Vec<Ast>, Vec<ParseError>> {
         let declaration_start_span = self.current_token.span.clone();
         let mut all_errors = Vec::new();
         
-        // 解析类型声明
-        let variable_type = match self.parse_type_declaration() {
+        // 解析声明说明符（可能包含 const）
+        let (decl_type, decl_is_const) = match self.parse_decl_specifiers() {
             Ok(t) => t,
             Err(errors) => {
                 all_errors.extend(errors);
@@ -175,8 +181,8 @@ impl<'a> Parser<'a> {
             }
         };
         
-        // 解析标识符名称
-        let variable_name = match self.expect_identifier_token() {
+        // 解析标识符名称（第一个声明项）
+        let first_variable_name = match self.expect_identifier_token() {
             Ok(name) => name,
             Err(errors) => {
                 all_errors.extend(errors);
@@ -235,46 +241,92 @@ impl<'a> Parser<'a> {
                     }
                 };
                 
-                Ok(Ast::new(
+                Ok(vec![Ast::new(
                     AstKind::Function {
-                        function_name: variable_name,
+                        function_name: first_variable_name,
                         parameters,
-                        return_type: Some(variable_type),
+                        return_type: Some(decl_type),
                         function_body: Box::new(function_body),
                     },
                     self.create_span_from_to(&declaration_start_span, &self.current_token.span)
-                ))
+                )])
             }
-            Token::Semicolon | Token::Equal => {
-                // 变量声明：标识符后跟';'或'='
-                let initial_value = if let Token::Equal = self.current_token.token {
-                    self.advance_to_next_token(); // 跳过'='
-                    match self.parse_expression() {
-                        Ok(expr) => Some(Box::new(expr)),
+            Token::Semicolon | Token::Equal | Token::LBracket | Token::Comma => {
+                // 变量声明（支持逗号分隔的多声明）：标识符后跟';'、'='或'['（数组）
+                let mut declarations: Vec<Ast> = Vec::new();
+
+                // 一个小的帮助闭包：解析单个声明器（名称已给定，复用相同的基础类型）
+                let mut parse_one_declarator = |name: String, this: &mut Self| -> Result<Ast, Vec<ParseError>> {
+                    // 解析数组维度（如果有）
+                    let declared_type = match this.parse_array_dimensions(decl_type.clone()) {
+                        Ok(t) => t,
+                        Err(errors) => return Err(errors),
+                    };
+
+                    // 可选的初始值
+                    let init = if let Token::Equal = this.current_token.token {
+                        this.advance_to_next_token();
+                        match this.parse_expression() {
+                            Ok(expr) => Some(Box::new(expr)),
+                            Err(errors) => return Err(errors),
+                        }
+                    } else {
+                        None
+                    };
+
+                    Ok(Ast::new(
+                        AstKind::VariableDeclaration {
+                            variable_name: name,
+                            variable_type: declared_type,
+                            initial_value: init,
+                            is_const: decl_is_const,
+                        },
+                        this.create_span_from_to(&declaration_start_span, &this.current_token.span)
+                    ))
+                };
+
+                // 解析第一个声明器
+                match parse_one_declarator(first_variable_name, self) {
+                    Ok(ast) => declarations.push(ast),
+                    Err(errors) => {
+                        all_errors.extend(errors);
+                        self.recover_from_error();
+                        return Err(all_errors);
+                    }
+                }
+
+                // 解析后续以逗号分隔的声明器
+                while let Token::Comma = self.current_token.token {
+                    self.advance_to_next_token(); // 跳过逗号
+
+                    // 下一个标识符
+                    let next_name = match self.expect_identifier_token() {
+                        Ok(name) => name,
+                        Err(errors) => {
+                            all_errors.extend(errors);
+                            self.recover_from_error();
+                            return Err(all_errors);
+                        }
+                    };
+
+                    match parse_one_declarator(next_name, self) {
+                        Ok(ast) => declarations.push(ast),
                         Err(errors) => {
                             all_errors.extend(errors);
                             self.recover_from_error();
                             return Err(all_errors);
                         }
                     }
-                } else {
-                    None
-                };
-                
+                }
+
+                // 整个声明以分号结束
                 if let Err(errors) = self.expect_token(Token::Semicolon) {
                     all_errors.extend(errors);
                     self.recover_from_error();
                     return Err(all_errors);
                 }
-                
-                Ok(Ast::new(
-                    AstKind::VariableDeclaration {
-                        variable_name,
-                        variable_type,
-                        initial_value,
-                    },
-                    self.create_span_from_to(&declaration_start_span, &self.current_token.span)
-                ))
+
+                Ok(declarations)
             }
             _ => {
                 // 错误恢复：记录错误，跳过到同步点，继续解析
@@ -300,18 +352,24 @@ impl<'a> Parser<'a> {
     /// * `Ok(Type)` - 解析成功，返回类型
     /// * `Err(Vec<ParseError>)` - 解析失败
     fn parse_type_declaration(&mut self) -> Result<Type, Vec<ParseError>> {
-        match &self.current_token.token {
+        // 可选的 const 修饰符（在变量声明路径由 parse_decl_specifiers 处理；
+        // 这里保留吞掉 const 的行为以兼容现有调用场景，如返回类型/参数）
+        if matches!(self.current_token.token, Token::KeywordConst) {
+            self.advance_to_next_token();
+        }
+        
+        let base_type = match &self.current_token.token {
             Token::KeywordInt => {
                 self.advance_to_next_token();
-                Ok(Type::IntType)
+                Type::IntType
             }
             Token::KeywordFloat => {
                 self.advance_to_next_token();
-                Ok(Type::FloatType)
+                Type::FloatType
             }
             Token::KeywordVoid => {
                 self.advance_to_next_token();
-                Ok(Type::VoidType)
+                Type::VoidType
             }
             _ => {
                 // 按照rustc设计理念：构造错误对象，不直接打印
@@ -324,7 +382,26 @@ impl<'a> Parser<'a> {
                 };
                 return Err(vec![error]);
             }
+        };
+        
+        // 检查是否有数组维度
+        if let Token::LBracket = self.current_token.token {
+            self.parse_array_dimensions(base_type)
+        } else {
+            Ok(base_type)
         }
+    }
+
+    /// 解析声明说明符：可选的 const + 基本类型
+    /// 返回 (Type, is_const)
+    fn parse_decl_specifiers(&mut self) -> Result<(Type, bool), Vec<ParseError>> {
+        let mut is_const = false;
+        if matches!(self.current_token.token, Token::KeywordConst) {
+            is_const = true;
+            self.advance_to_next_token();
+        }
+        let ty = self.parse_type_declaration()?;
+        Ok((ty, is_const))
     }
     
     /// 解析函数参数列表
@@ -347,6 +424,13 @@ impl<'a> Parser<'a> {
             let parameter_type = self.parse_type_declaration()?;
             let parameter_name = self.expect_identifier_token()?;
             
+            // 处理数组参数：检查是否有数组维度
+            let final_parameter_type = if let Token::LBracket = self.current_token.token {
+                self.parse_array_dimensions(parameter_type)?
+            } else {
+                parameter_type
+            };
+            
             // 将参数添加到已定义集合中
             // 这里不再需要defined_variables，因为错误处理已移除
             
@@ -354,8 +438,9 @@ impl<'a> Parser<'a> {
             parameters.push(Ast::new(
                 AstKind::VariableDeclaration {
                     variable_name: parameter_name,
-                    variable_type: parameter_type,
+                    variable_type: final_parameter_type,
                     initial_value: None,
+                    is_const: false,
                 },
                 self.current_token.span.clone()
             ));
@@ -414,14 +499,14 @@ impl<'a> Parser<'a> {
             self.advance_to_next_token(); // 跳过右大括号
         }
         
-        // 如果有错误，返回所有错误；否则返回AST
+                                // 如果有错误，返回所有错误；否则返回AST
         if all_errors.is_empty() {
             Ok(Ast::new(
                 AstKind::Statement(Statement::Compound { statements }),
                 self.create_span_from_to(&block_start_span, &self.current_token.span)
             ))
         } else {
-            Err(all_errors)
+                    Err(all_errors)
         }
     }
     
@@ -434,15 +519,19 @@ impl<'a> Parser<'a> {
     /// * `Ok(Ast)` - 解析成功，返回语句AST节点
     /// * `Err(Vec<ParseError>)` - 解析失败
     fn parse_statement(&mut self) -> Result<Ast, Vec<ParseError>> {
+        // 如果有挂起的局部声明（来自上一条逗号分隔声明），逐个发出
+        if let Some(next_decl) = self.pending_declarations.pop() {
+            return Ok(next_decl);
+        }
         match &self.current_token.token {
             Token::LBrace => {
                 // 复合语句：{ ... }
                 self.advance_to_next_token();
                 self.parse_compound_statement()
             }
-            Token::KeywordInt | Token::KeywordFloat | Token::KeywordVoid => {
-                // 变量声明语句：类型 变量名 [= 初始值];
-                self.parse_variable_declaration()
+            Token::KeywordInt | Token::KeywordFloat | Token::KeywordVoid | Token::KeywordConst => {
+                // 变量声明语句：类型 变量名 [= 初始值] (',' 变量名 [= 初始值])* ';'
+                self.parse_variable_declaration_and_maybe_queue_rest()
             }
             Token::KeywordIf => self.parse_if_statement(),
             Token::KeywordWhile => self.parse_while_statement(),
@@ -603,25 +692,6 @@ impl<'a> Parser<'a> {
         
         let body = Box::new(self.parse_statement()?);
         
-        // 按照rustc设计理念：检查while语句体是否缺少左大括号（建议使用大括号包围）
-        if let AstKind::Statement(Statement::Compound { .. }) = body.kind {
-            // 复合语句，正常
-        } else {
-            // 构造错误对象，不直接打印
-            let error_span = Span::new(
-                self.current_token.span.file_id,
-                self.current_token.span.line,
-                self.current_token.span.column,
-                body.span.end_pos,
-                self.current_token.span.end_pos,
-            );
-            let error = ParseError {
-                message: "缺少左大括号".to_string(),
-                span: error_span,
-            };
-            return Err(vec![error]);
-        }
-        
         Ok(Ast::new(
             AstKind::Statement(Statement::While {
                 condition,
@@ -702,14 +772,14 @@ impl<'a> Parser<'a> {
     fn parse_variable_declaration(&mut self) -> Result<Ast, Vec<ParseError>> {
         let declaration_start_span = self.current_token.span.clone();
         
-        // 解析类型声明
-        let variable_type = self.parse_type_declaration()?;
+        // 解析声明说明符（可能包含 const）
+        let (declared_base_type, is_const) = self.parse_decl_specifiers()?;
         
         // 解析标识符名称
         let variable_name = self.expect_identifier_token()?;
         
-        // 将变量添加到已定义集合中
-        // 这里不再需要defined_variables，因为错误处理已移除
+        // 解析数组声明（支持多维数组）
+        let variable_type = self.parse_array_dimensions(declared_base_type.clone())?;
         
         // 可选的初始值
         let initial_value = if let Token::Equal = self.current_token.token {
@@ -718,7 +788,33 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        
+        // 处理可能的逗号分隔声明器，若存在则排队到 pending_declarations
+        while let Token::Comma = self.current_token.token {
+            self.advance_to_next_token(); // 跳过逗号
+
+            // 下一个声明器
+            let name = self.expect_identifier_token()?;
+            let ty = self.parse_array_dimensions(declared_base_type.clone())?;
+
+            let init = if let Token::Equal = self.current_token.token {
+                self.advance_to_next_token();
+                Some(Box::new(self.parse_expression()?))
+            } else {
+                None
+            };
+
+            // 注意：push 到队列，稍后以独立语句形式依次返回
+            self.pending_declarations.push(Ast::new(
+                AstKind::VariableDeclaration {
+                    variable_name: name,
+                    variable_type: ty,
+                    initial_value: init,
+                    is_const,
+                },
+                self.current_token.span.clone(),
+            ));
+        }
+
         self.expect_token(Token::Semicolon)?;
         
         Ok(Ast::new(
@@ -726,9 +822,15 @@ impl<'a> Parser<'a> {
                 variable_name,
                 variable_type,
                 initial_value,
+                is_const,
             },
             self.create_span_from_to(&declaration_start_span, &self.current_token.span)
         ))
+    }
+
+    /// 变量声明语句解析并支持逗号分隔的其余声明器入队
+    fn parse_variable_declaration_and_maybe_queue_rest(&mut self) -> Result<Ast, Vec<ParseError>> {
+        self.parse_variable_declaration()
     }
     
     // ==================== 表达式解析 ====================
@@ -1079,10 +1181,40 @@ impl<'a> Parser<'a> {
                         }),
                         self.create_span_from_to(&span, &call_end_span)
                     ))
-                } else {
-                    // 检查变量是否已定义
-                    // 这里不再需要defined_variables，因为错误处理已移除
+                } else if let Token::LBracket = self.current_token.token {
+                    // 多维数组访问：标识符[索引1][索引2]...
+                    let mut array_expr = Ast::new(
+                        AstKind::Expression(Expression::Identifier { name: identifier_name }),
+                        span.clone()
+                    );
                     
+                    // 收集所有数组访问信息，避免递归构建AST
+                    let mut array_accesses = Vec::new();
+                    while let Token::LBracket = self.current_token.token {
+                        self.advance_to_next_token(); // 跳过 '['
+                        
+                        let index = self.parse_expression()?;
+                        
+                        self.expect_token(Token::RBracket)?; // 期望 ']'
+                        
+                        let current_end_span = self.current_token.span.clone();
+                        array_accesses.push((index, current_end_span));
+                    }
+                    
+                    // 一次性构建所有数组访问
+                    for (index, end_span) in array_accesses {
+                        array_expr = Ast::new(
+                            AstKind::Expression(Expression::ArrayAccess {
+                                array: Box::new(array_expr),
+                                index: Box::new(index),
+                            }),
+                            self.create_span_from_to(&span, &end_span)
+                        );
+                    }
+                    
+                    Ok(array_expr)
+                } else {
+                    // 简单的标识符
                     Ok(Ast::new(
                         AstKind::Expression(Expression::Identifier { name: identifier_name }),
                         span
@@ -1109,6 +1241,31 @@ impl<'a> Parser<'a> {
                 }
                 
                 Ok(expression)
+            }
+            Token::LBrace => {
+                // 初始化列表：{ e1, e2, { ... }, ... }
+                let list_start = self.current_token.span.clone();
+                self.advance_to_next_token(); // 跳过 '{'
+
+                let mut elements: Vec<Ast> = Vec::new();
+                if !matches!(self.current_token.token, Token::RBrace) {
+                    loop {
+                        let elem = self.parse_expression()?;
+                        elements.push(elem);
+                        if matches!(self.current_token.token, Token::RBrace) {
+                            break;
+                        }
+                        self.expect_token(Token::Comma)?;
+                    }
+                }
+
+                // 期望 '}'
+                self.expect_token(Token::RBrace)?;
+
+                Ok(Ast::new(
+                    AstKind::Expression(Expression::InitializerList { elements }),
+                    list_start,
+                ))
             }
             _ => {
                 // 按照rustc设计理念：构造错误对象，不直接打印
@@ -1273,6 +1430,74 @@ impl<'a> Parser<'a> {
         )
     }
     
+    /// 解析数组维度（支持多维数组）
+    /// 
+    /// 解析连续的 [size] 声明，从右到左构建嵌套的ArrayType
+    /// 例如：int arr[3][4] 会被解析为 ArrayType { 
+    ///   element_type: ArrayType { element_type: int, array_size: 4 }, 
+    ///   array_size: 3 
+    /// }
+    /// 
+    /// # 参数
+    /// * `base_type` - 基础元素类型
+    /// 
+    /// # 返回
+    /// * `Ok(Type)` - 解析成功，返回数组类型或基础类型
+    /// * `Err(Vec<ParseError>)` - 解析失败
+    fn parse_array_dimensions(&mut self, base_type: Type) -> Result<Type, Vec<ParseError>> {
+        let mut dimensions = Vec::new();
+        
+        // 收集所有的维度大小
+        while let Token::LBracket = self.current_token.token {
+            self.advance_to_next_token(); // 跳过 '['
+            
+            // 解析数组大小：支持常量表达式（如 3+1），或空（[]）
+            let array_size = if matches!(self.current_token.token, Token::RBracket) {
+                None
+            } else {
+                // 尝试解析一个表达式作为维度
+                let size_expr = self.parse_expression()?;
+                // 尝试常量折叠为整数
+                if let AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(v))) = &size_expr.kind {
+                    if *v <= 0 {
+                        let error = ParseError {
+                            message: "数组大小必须是正整数".to_string(),
+                            span: size_expr.span.clone(),
+                        };
+                        return Err(vec![error]);
+                    }
+                    Some(*v as usize)
+                } else {
+                    // 暂不支持非常量维度，先标记为未知大小
+                    None
+                }
+            };
+            
+            self.expect_token(Token::RBracket)?; // 期望 ']'
+            dimensions.push(array_size);
+        }
+        
+        // 如果没有维度，返回基础类型
+        if dimensions.is_empty() {
+            return Ok(base_type);
+        }
+        
+        // 从最内层开始构建嵌套的数组类型
+        // 对于 int arr[3][4]，我们想要：
+        // ArrayType { element_type: ArrayType { element_type: int, size: 4 }, size: 3 }
+        let mut current_type = base_type;
+        
+        // 从最后一个维度开始，向前构建
+        for &dimension_size in dimensions.iter().rev() {
+            current_type = Type::ArrayType {
+                element_type: Box::new(current_type),
+                array_size: dimension_size,
+            };
+        }
+        
+        Ok(current_type)
+    }
+    
     /// 错误恢复：跳过到下一个同步点
     /// 
     /// 按照rustc设计理念：遇到错误后，跳过当前错误区域，
@@ -1284,6 +1509,9 @@ impl<'a> Parser<'a> {
     /// - 类型关键字 (新声明开始)
     /// - 文件结束
     fn recover_from_error(&mut self) {
+        // 确保至少推进一个token，避免无限循环
+        self.advance_to_next_token();
+        
         while !self.is_eof() {
             match self.current_token.token {
                 // 语句结束标记
@@ -1293,10 +1521,11 @@ impl<'a> Parser<'a> {
                 }
                 // 块结束标记
                 Token::RBrace => {
+                    self.advance_to_next_token();
                     break;
                 }
                 // 新声明开始标记
-                Token::KeywordInt | Token::KeywordFloat | Token::KeywordVoid => {
+                Token::KeywordInt | Token::KeywordFloat | Token::KeywordVoid | Token::KeywordConst => {
                     break;
                 }
                 // 其他控制流关键字
@@ -1311,4 +1540,15 @@ impl<'a> Parser<'a> {
             }
         }
     }
+    
+    /// 跳过所有数组访问token，直到遇到下一个非数组访问token
+    fn skip_array_access_tokens(&mut self) -> Result<(), Vec<ParseError>> {
+        while let Token::LBracket = self.current_token.token {
+            self.advance_to_next_token(); // 跳过 '['
+            self.parse_expression()?; // 解析索引表达式
+            self.expect_token(Token::RBracket)?; // 期望 ']'
+        }
+        Ok(())
+    }
+
 }

@@ -45,7 +45,8 @@ pub fn generate_semantic_ast_dot(
     // 写入DOT文件头部
     writeln!(file, "digraph SemanticAST {{")?;
     writeln!(file, "  rankdir=TB;")?;
-    writeln!(file, "  node [shape=box, fontname=\"Arial\", style=filled, fontcolor=black];")?;
+    // 默认给节点一个浅绿色填充，个别节点若未单独指定颜色也不会出现无填充
+    writeln!(file, "  node [shape=box, fontname=\"Arial\", style=filled, fillcolor=lightgreen, fontcolor=black];")?;
 
     // 递归生成带语义信息的AST节点
     generate_semantic_ast_nodes_and_edges(ast, file.by_ref(), 0)?;
@@ -140,6 +141,7 @@ fn get_simple_label(kind: &AstKind) -> String {
             Expression::UnaryOperation { operator, .. } => format!("UnaryOp: {:?}", operator),
             Expression::FunctionCall { function_name, .. } => format!("Call: {}", function_name),
             Expression::Assignment { .. } => "Assignment".to_string(),
+            Expression::InitializerList { .. } => "InitList".to_string(),
             Expression::ArrayAccess { .. } => "ArrayAccess".to_string(),
             Expression::MemberAccess { member_name, .. } => format!("MemberAccess: {}", member_name),
         },
@@ -180,6 +182,7 @@ fn get_node_type(kind: &AstKind) -> String {
             Expression::UnaryOperation { .. } => "UnaryOperation".to_string(),
             Expression::FunctionCall { .. } => "FunctionCall".to_string(),
             Expression::Assignment { .. } => "Assignment".to_string(),
+            Expression::InitializerList { .. } => "InitializerList".to_string(),
             Expression::ArrayAccess { .. } => "ArrayAccess".to_string(),
             Expression::MemberAccess { .. } => "MemberAccess".to_string(),
         },
@@ -245,6 +248,7 @@ fn get_direct_children<'a>(ast: &'a Ast) -> Vec<&'a Ast> {
         AstKind::Expression(Expression::BinaryOperation { left_operand, right_operand, .. }) => vec![left_operand.as_ref(), right_operand.as_ref()],
         AstKind::Expression(Expression::UnaryOperation { operand, .. }) => vec![operand.as_ref()],
         AstKind::Expression(Expression::FunctionCall { arguments, .. }) => arguments.iter().collect(),
+        AstKind::Expression(Expression::InitializerList { elements }) => elements.iter().collect(),
         AstKind::Expression(Expression::ArrayAccess { array, index }) => vec![array.as_ref(), index.as_ref()],
         AstKind::Expression(Expression::MemberAccess { object, .. }) => vec![object.as_ref()],
         _ => vec![],

@@ -41,7 +41,10 @@ fn generate_ast_nodes_and_edges(ast: &Ast, writer: &mut impl Write, node_id: usi
     let label = match &ast.kind {
         AstKind::Program { .. } => "Program".to_string(),
         AstKind::Function { function_name, .. } => format!("Function: {}", function_name),
-        AstKind::VariableDeclaration { variable_name, .. } => format!("VarDecl: {}", variable_name),
+        AstKind::VariableDeclaration { variable_name, variable_type, is_const, .. } => {
+            let const_tag = if *is_const { "const " } else { "" };
+            format!("VarDecl: {}{} ({:?})", const_tag, variable_name, variable_type)
+        },
         AstKind::Statement(Statement::Compound { .. }) => "Compound".to_string(),
         AstKind::Statement(Statement::ExpressionStatement { .. }) => "ExprStmt".to_string(),
         AstKind::Statement(Statement::Return { .. }) => "Return".to_string(),
@@ -60,6 +63,7 @@ fn generate_ast_nodes_and_edges(ast: &Ast, writer: &mut impl Write, node_id: usi
         AstKind::Expression(Expression::Identifier { name }) => format!("Identifier: {}", name),
         AstKind::Expression(Expression::FunctionCall { function_name, .. }) => format!("Call: {}", function_name),
         AstKind::Expression(Expression::Assignment { .. }) => "Assignment".to_string(),
+        AstKind::Expression(Expression::InitializerList { .. }) => "InitList".to_string(),
         AstKind::Expression(Expression::ArrayAccess { .. }) => "ArrayAccess".to_string(),
         AstKind::Expression(Expression::MemberAccess { member_name, .. }) => format!("MemberAccess: {}", member_name),
         AstKind::Type(Type::IntType) => "Type: int".to_string(),
@@ -116,6 +120,7 @@ fn get_direct_children<'a>(ast: &'a Ast) -> Vec<&'a Ast> {
         AstKind::Expression(Expression::BinaryOperation { left_operand, right_operand, .. }) => vec![left_operand.as_ref(), right_operand.as_ref()],
         AstKind::Expression(Expression::UnaryOperation { operand, .. }) => vec![operand.as_ref()],
         AstKind::Expression(Expression::FunctionCall { arguments, .. }) => arguments.iter().collect(),
+        AstKind::Expression(Expression::InitializerList { elements }) => elements.iter().collect(),
         AstKind::Expression(Expression::ArrayAccess { array, index }) => vec![array.as_ref(), index.as_ref()],
         AstKind::Expression(Expression::MemberAccess { object, .. }) => vec![object.as_ref()],
         _ => vec![],

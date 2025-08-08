@@ -84,6 +84,7 @@ pub enum AstKind {
         variable_name: String,
         variable_type: Type,
         initial_value: Option<Box<Ast>>,
+        is_const: bool,
     },
     
     // 语句
@@ -181,6 +182,11 @@ pub enum Expression {
         value: Box<Ast>,
     },
     
+    // 初始化列表 { a, b, { c, d } }
+    InitializerList {
+        elements: Vec<Ast>,
+    },
+    
     // 数组访问
     ArrayAccess {
         array: Box<Ast>,
@@ -240,7 +246,7 @@ pub enum UnaryOperator {
     Decrement,     // --
 }
 
-/// 类型系统
+/// 类型
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     IntType,
@@ -264,7 +270,11 @@ pub enum Type {
 impl Ast {
     /// 创建新的AST节点
     pub fn new(kind: AstKind, span: Span) -> Self {
-        Self { kind, span, semantic_info: SemanticInfo::new() }
+        Self {
+            kind,
+            span,
+            semantic_info: SemanticInfo::new(),
+        }
     }
     
     /// 获取节点类型
@@ -272,11 +282,13 @@ impl Ast {
         &self.kind
     }
     
-    /// 获取节点位置信息
+    /// 获取位置信息
     pub fn span(&self) -> &Span {
         &self.span
     }
 }
+
+
 
 impl From<Statement> for AstKind {
     fn from(stmt: Statement) -> Self {

@@ -67,7 +67,7 @@ pub enum SemanticErrorType {
 impl SemanticAnalyzer {
     /// 创建新的语义分析器
     pub fn new() -> Self {
-        Self {
+        let mut analyzer = Self {
             type_system: TypeSystem::new(),
             symbol_table: SymbolTable::new(),
             var_checker: VarChecker::new(),
@@ -75,7 +75,28 @@ impl SemanticAnalyzer {
             stmt_checker: StmtChecker::new(),
             expr_checker: ExprChecker::new(),
             errors: Vec::new(),
-        }
+        };
+        // 预注册内建函数（供语义检查识别）
+        analyzer.register_builtin_functions();
+        analyzer
+    }
+
+    /// 注册内建函数（如 getint/putint）
+    fn register_builtin_functions(&mut self) {
+        // getint: () -> int
+        let _ = self.symbol_table.add_function(
+            "getint",
+            Type::IntType,
+            vec![],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // putint: (int) -> void
+        let _ = self.symbol_table.add_function(
+            "putint",
+            Type::VoidType,
+            vec![Type::IntType],
+            Span::start_only(0, 0, 0, 0),
+        );
     }
     
     /// 分析AST，进行语义检查
