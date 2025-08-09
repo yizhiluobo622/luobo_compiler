@@ -135,6 +135,7 @@ fn get_token_text(token: &Token) -> String {
         Token::KeywordIf => "if".to_string(),
         Token::KeywordElse => "else".to_string(),
         Token::KeywordWhile => "while".to_string(),
+        Token::KeywordFor => "for".to_string(),
         Token::KeywordBreak => "break".to_string(),
         Token::KeywordContinue => "continue".to_string(),
         Token::KeywordReturn => "return".to_string(),
