@@ -6,6 +6,7 @@ use clap::Parser as ClapParser;
 use crate::frontend::lexer::Lexer;
 use crate::frontend::parser::Parser;
 mod frontend;
+mod ast_to_cfg;
 #[derive(ClapParser, Debug)]
 #[command(author, version, about)]
 
@@ -207,3 +208,4 @@ fn print_span_test(){
         }
 
 }
+
