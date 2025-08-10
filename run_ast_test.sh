@@ -8,22 +8,20 @@ if [ ! -d "Code/sy/Func/src" ]; then
     exit 1
 fi
 
-# 编译测试程序
-echo "🔨 编译测试程序..."
-cargo build --bin test_ast_batch --release 2>/dev/null || {
-    echo "❌ 编译失败，尝试重新编译..."
-    cargo build --bin test_ast_batch
-    if [ $? -ne 0 ]; then
-        echo "❌ 编译失败，请检查代码"
-        exit 1
-    fi
-}
+# 检查测试文件是否存在
+if [ ! -f "examples/test_ast_batch.rs" ]; then
+    echo "❌ 错误: 找不到测试文件 examples/test_ast_batch.rs"
+    exit 1
+fi
 
-echo "✅ 编译成功"
-
-# 运行测试
+# 运行示例程序
 echo "🧪 运行AST构建测试..."
-./target/release/test_ast_batch
+if cargo run --example test_ast_batch; then
+    echo "✅ 测试运行成功"
+else
+    echo "❌ 测试运行失败"
+    exit 1
+fi
 
 echo ""
 echo "📋 测试完成！"
@@ -35,4 +33,6 @@ if [ -f "test_ast_report.txt" ]; then
     echo "📊 测试结果摘要:"
     echo "=================="
     grep -E "(总测试数|通过测试|失败测试|成功率)" test_ast_report.txt
+else
+    echo "⚠️  警告: 未找到测试报告文件 test_ast_report.txt"
 fi

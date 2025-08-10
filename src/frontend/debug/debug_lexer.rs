@@ -8,41 +8,41 @@ pub fn reconstruct_source(input: &str) -> String {
     let mut result = String::new();
     
     loop {
-        let (tok, text) = lexer.parse_token();
+        let located_token = lexer.next_located_token();
         
-        match tok {
+        match &located_token.token {
             Token::EOF => {
                 break;
             }
             Token::Semicolon => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
                 result.push('\n'); // 分号后换行
             }
             Token::LBrace => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
                 result.push('\n'); // 左大括号后换行
             }
             Token::RBrace => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
                 result.push('\n'); // 右大括号后换行
             }
             Token::LParen => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
             }
             Token::RParen => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
             }
             Token::LBracket => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
             }
             Token::RBracket => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
             }
             Token::Comma => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
             }
             _ => {
-                result.push_str(&text);
+                result.push_str(&get_token_text(&located_token.token));
             }
         }
     }
@@ -56,15 +56,15 @@ pub fn show_tokens(input: &str) {
     
     println!("=== Token Details ===");
     loop {
-        let (tok, text) = lexer.parse_token();
+        let located_token = lexer.next_located_token();
         
-        match tok {
+        match &located_token.token {
             Token::EOF => {
                 println!("EOF");
                 break;
             }
             _ => {
-                println!("{:?} -> '{}'", tok, text);
+                println!("{:?} -> '{}'", located_token.token, get_token_text(&located_token.token));
             }
         }
     }

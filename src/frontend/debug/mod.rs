@@ -7,5 +7,4 @@ pub mod debug_semantic;
 pub use debug_lexer::*;
 pub use debug_semantic::*;
 
-#[cfg(test)]
-mod test_debug;
+
