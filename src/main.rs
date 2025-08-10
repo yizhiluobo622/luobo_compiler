@@ -7,6 +7,7 @@ use crate::frontend::lexer::Lexer;
 use crate::frontend::parser::Parser;
 mod frontend;
 mod ast_to_cfg;
+mod for_test;
 #[derive(ClapParser, Debug)]
 #[command(author, version, about)]
 

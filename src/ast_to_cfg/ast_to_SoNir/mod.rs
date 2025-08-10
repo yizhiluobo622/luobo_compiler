@@ -3,8 +3,6 @@
 //! 这个模块提供了将抽象语法树(AST)转换为Sea of Nodes中间表示(IR)的功能。
 //! Sea of Nodes是一种基于图的中间表示，支持高效的优化和代码生成。
 
-
-
 pub mod son_ir;
 pub mod node_mapping;
 pub mod converter;
@@ -191,262 +189,105 @@ pub fn estimate_conversion_stats(ast: &crate::frontend::ast::Ast) -> ConversionS
     crate::ast_to_cfg::ast_to_SoNir::converter::estimate_conversion_stats(ast)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::frontend::ast::{Ast, AstKind, Expression, Statement, Literal, Type, SemanticInfo};
-    use crate::frontend::span::Span;
-
-    #[test]
-    fn test_module_exports() {
-        // 测试所有主要类型都能正确导出
-        let _: SonIr = SonIr::new();
-        let _: SonNode = SonNode::new(0, SonNodeKind::new(OpCode::Start));
-        let _: SonEdge = SonEdge::new(0, 1, EdgeType::Data);
-        let _: TypeSystem = TypeSystem::new();
-        
-        // 测试操作码导出
-        let _: OpCode = OpCode::Start;
-        let _: OpCode = OpCode::Return;
-        let _: OpCode = OpCode::Add;
-        
-        // 测试常量值导出
-        let _: ConstantValue = ConstantValue::Integer(42);
-        let _: ConstantValue = ConstantValue::Float(3.14);
-        let _: ConstantValue = ConstantValue::Boolean(true);
-        let _: ConstantValue = son_ir::ConstantValue::String("hello".to_string());
-        
-        // 测试边类型导出
-        let _: EdgeType = EdgeType::Data;
-        let _: EdgeType = EdgeType::Control;
-        let _: EdgeType = EdgeType::Condition;
-    }
-
-    #[test]
-    fn test_convenience_functions() {
-        // 测试便捷函数的存在性
-        let ast = create_test_ast();
-        
-        // 这些函数应该存在，即使可能返回错误
-        let _ = validate_ast_for_conversion(&ast);
-        let _ = estimate_conversion_stats(&ast);
-    }
-
-    #[test]
-    fn test_sy_file_to_sonir() {
-        // 读取00_main.sy文件内容
-        let source_code = match std::fs::read_to_string("/home/yizhiluobo/luobo_compiler/src/target_code/sy/000_1.sy") {
-            Ok(content) => content,
-            Err(_) => {
-                "int main(){
-    return 3;
-}".to_string()
+/// 生成SoN IR的DOT图文件
+/// 
+/// # 参数
+/// * `son_ir` - 要生成图的Sea of Nodes IR
+/// * `output_path` - 输出文件路径
+/// 
+/// # 返回
+/// * `Ok(())` - 成功生成图文件
+/// * `Err(std::io::Error)` - 生成失败的错误信息
+pub fn generate_son_ir_dot(son_ir: &SonIr, output_path: &str) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::Write;
+    
+    let mut file = File::create(output_path)?;
+    
+    // 写入DOT文件头部
+    writeln!(file, "digraph SoNir {{")?;
+    writeln!(file, "  rankdir=TB;")?;
+    writeln!(file, "  node [shape=box, style=filled, fontname=\"Arial\"];")?;
+    writeln!(file, "  edge [fontname=\"Arial\"];")?;
+    writeln!(file, "")?;
+    
+    // 生成节点
+    for (node_id, node) in son_ir.get_all_nodes() {
+        let node_label = match &node.kind {
+            SonNodeKind { opcode: OpCode::Constant, data: NodeData::Constant { value, .. } } => {
+                format!("Constant\\n{:?}", value)
             }
-        };
-        
-        // 使用词法分析器
-        let mut lexer = crate::frontend::lexer::Lexer::new(&source_code);
-        
-        // 使用语法分析器
-        let mut parser = crate::frontend::parser::Parser::new(lexer);
-        
-        // 解析生成AST
-        let parse_result = parser.parse();
-        match parse_result {
-            Ok(ast) => {
-                
-                // 进行语义分析
-                let semantic_result = crate::frontend::semantic_analysis::analyze_ast_with_semantic_info(ast);
-                match semantic_result {
-                    Ok(annotated_ast) => {
-
-                        
-                        // 从Program AST中提取Function节点
-                        let function_ast = match &annotated_ast.kind {
-                            crate::frontend::ast::AstKind::Program { functions, .. } => {
-                                if functions.is_empty() {
-                                    panic!("Program中没有找到函数定义");
-                                }
-                                // 取第一个函数（在我们的例子中就是main函数）
-                                &functions[0]
-                            }
-                            _ => panic!("AST根节点不是Program类型"),
-                        };
-                        
-
-                        
-                        // 转换为SoNir（传递Function节点而不是Program节点）
-                        let sonir_result = convert_ast_to_son_with_stats(function_ast);
-                        match sonir_result {
-                            Ok(conversion_result) => {
-                                
-                                
-                                // 显示生成的SoNir结构
-                                let sonir = &conversion_result.son_ir;
-                                
-
-                                
-                                // 生成dot图文件，使用固定文件名
-                                let dot_content = generate_dot_graph(sonir);
-                                let filename = "/home/yizhiluobo/luobo_compiler/src/ast_to_cfg/Debug/graph/test_sy_file_to_sonir.dot";
-                                
-                                match std::fs::write(filename, dot_content) {
-                                    Ok(_) => {},
-                                    Err(e) => {},
-                                }
-                                
-                                // 验证生成的IR
-                                assert!(sonir.node_count() > 0, "SoNir应该包含节点");
-                                assert!(sonir.edge_count() > 0, "SoNir应该包含边");
-                                assert!(sonir.get_entry_node().is_some(), "SoNir应该有入口节点");
-                                assert!(sonir.get_exit_node().is_some(), "SoNir应该有出口节点");
-                                
-
-                            }
-                            Err(e) => {
-                                panic!("转换失败: {:?}", e);
-                            }
-                        }
-                    }
-                    Err(errors) => {
-                        panic!("语义分析失败");
-                    }
-                }
+            SonNodeKind { opcode: OpCode::Local, data: NodeData::Local { name, typ, .. } } => {
+                format!("Local\\n{}\\n{:?}", name, typ)
             }
-            Err(parse_errors) => {
-                panic!("语法分析失败");
+            SonNodeKind { opcode: OpCode::Parameter, data: NodeData::Parameter { name, typ, .. } } => {
+                format!("Parameter\\n{}\\n{:?}", name, typ)
             }
-        }
-    }
-
-    /// 生成DOT格式的图形表示
-    fn generate_dot_graph(sonir: &SonIr) -> String {
-        let mut dot = String::new();
-        dot.push_str("digraph SoNir {\n");
-        dot.push_str("  rankdir=TB;\n");
-        dot.push_str("  node [shape=box, style=filled, fontname=\"Arial\"];\n");
-        dot.push_str("  edge [fontname=\"Arial\"];\n\n");
-        
-        // 添加节点
-        for (id, node) in sonir.get_all_nodes() {
-            let node_label = format!("Node_{}", id);
-            let node_content = match &node.kind.opcode {
-                OpCode::Start => "Start".to_string(),
-                OpCode::Return => "Return".to_string(),
-                OpCode::Constant => {
-                    if let NodeData::Constant { value, typ } = &node.kind.data {
-                        format!("Constant\\n{:?}\\n{:?}", value, typ)
-                    } else {
-                        "Constant".to_string()
-                    }
-                }
-                OpCode::Parameter => {
-                    if let NodeData::Parameter { name, typ } = &node.kind.data {
-                        format!("Parameter\\n{}\\n{:?}", name, typ)
-                    } else {
-                        "Parameter".to_string()
-                    }
-                }
-                OpCode::Local => {
-                    if let NodeData::Local { name, typ } = &node.kind.data {
-                        format!("Local\\n{}\\n{:?}", name, typ)
-                    } else {
-                        "Local".to_string()
-                    }
-                }
-                OpCode::Add => "Add".to_string(),
-                OpCode::Subtract => "Subtract".to_string(),
-                OpCode::Multiply => "Multiply".to_string(),
-                OpCode::Divide => "Divide".to_string(),
-                OpCode::If => "If".to_string(),
-                OpCode::Loop => "Loop".to_string(),
-                OpCode::Call => "Call".to_string(),
-                _ => format!("{:?}", node.kind.opcode),
-            };
-            
-            // 根据节点类型设置颜色
-            let color = match node.kind.opcode {
-                OpCode::Start => "lightgreen",
-                OpCode::Return => "lightcoral",
-                OpCode::Constant => "lightblue",
-                OpCode::Parameter => "lightyellow",
-                OpCode::Local => "lightcyan",
-                OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide => "lightpink",
-                OpCode::If => "orange",
-                OpCode::Loop => "purple",
-                OpCode::Call => "gold",
-                _ => "white",
-            };
-            
-            dot.push_str(&format!("  {} [label=\"{}\", fillcolor=\"{}\"];\n", node_label, node_content, color));
-        }
-        
-        dot.push_str("\n");
-        
-        // 添加边
-        for edge in sonir.get_all_edges() {
-            let from_label = format!("Node_{}", edge.from);
-            let to_label = format!("Node_{}", edge.to);
-            let edge_label = match edge.edge_type {
-                EdgeType::Control => "control",
-                EdgeType::Data => "data",
-                EdgeType::Condition => "condition",
-            };
-            
-            let edge_color = match edge.edge_type {
-                EdgeType::Control => "red",
-                EdgeType::Data => "blue",
-                EdgeType::Condition => "green",
-            };
-            
-            dot.push_str(&format!("  {} -> {} [label=\"{}\", color=\"{}\"];\n", 
-                from_label, to_label, edge_label, edge_color));
-        }
-        
-        dot.push_str("}\n");
-        dot
-    }
-
-    fn create_test_ast() -> Ast {
-        // 创建一个简单的测试AST
-        let return_stmt = Ast {
-            kind: AstKind::Statement(Statement::Return {
-                value: Some(Box::new(Ast {
-                    kind: AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(42))),
-                    span: Span::new(0, 1, 1, 10, 12),
-                    semantic_info: SemanticInfo::new(),
-                })),
-            }),
-            span: Span::new(0, 1, 1, 8, 12),
-            semantic_info: SemanticInfo::new(),
+            SonNodeKind { opcode: OpCode::Add, data: NodeData::BinaryOp { left, right } } => {
+                format!("Add\\nL: Node_{}\\nR: Node_{}", 
+                    left.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()),
+                    right.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()))
+            }
+            SonNodeKind { opcode: OpCode::Subtract, data: NodeData::BinaryOp { left, right } } => {
+                format!("Subtract\\nL: Node_{}\\nR: Node_{}", 
+                    left.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()),
+                    right.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()))
+            }
+            SonNodeKind { opcode: OpCode::Multiply, data: NodeData::BinaryOp { left, right } } => {
+                format!("Multiply\\nL: Node_{}\\nR: Node_{}", 
+                    left.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()),
+                    right.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()))
+            }
+            SonNodeKind { opcode: OpCode::Divide, data: NodeData::BinaryOp { left, right } } => {
+                format!("Divide\\nL: Node_{}\\nR: Node_{}", 
+                    left.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()),
+                    right.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()))
+            }
+            SonNodeKind { opcode: OpCode::Store, data: NodeData::Store { name, value, .. } } => {
+                format!("Store\\n{}\\nValue: Node_{}", 
+                    name,
+                    value.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string()))
+            }
+            SonNodeKind { opcode: OpCode::Load, data: NodeData::Load { name, .. } } => {
+                format!("Load\\n{}", name)
+            }
+            SonNodeKind { opcode: OpCode::Return, data: NodeData::None } => "Return".to_string(),
+            SonNodeKind { opcode: OpCode::Start, data: NodeData::None } => "Start".to_string(),
+            _ => format!("{:?}", node.kind.opcode),
         };
-
-        let compound_stmt = Ast {
-            kind: AstKind::Statement(Statement::Compound {
-                statements: vec![return_stmt],
-            }),
-            span: Span::new(0, 1, 1, 7, 13),
-            semantic_info: SemanticInfo::new(),
+        
+        let fillcolor = match node.kind.opcode {
+            OpCode::Start => "lightgreen",
+            OpCode::Return => "lightcoral",
+            OpCode::Constant => "lightblue",
+            OpCode::Local | OpCode::Parameter => "lightcyan",
+            OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide => "lightpink",
+            OpCode::Store | OpCode::Load => "white",
+            _ => "lightgray",
         };
-
-        let main_func = Ast {
-            kind: AstKind::Function {
-                function_name: "main".to_string(),
-                parameters: Vec::new(),
-                return_type: Some(Type::IntType),
-                function_body: Box::new(compound_stmt),
-            },
-            span: Span::new(0, 1, 1, 1, 13),
-            semantic_info: SemanticInfo::new(),
-        };
-
-        Ast {
-            kind: AstKind::Program {
-                functions: vec![main_func],
-                global_variables: Vec::new(),
-            },
-            span: Span::new(0, 1, 1, 0, 13),
-            semantic_info: SemanticInfo::new(),
-        }
+        
+        writeln!(file, "  Node_{} [label=\"{}\", fillcolor=\"{}\"];", node_id, node_label, fillcolor)?;
     }
+    
+    writeln!(file, "")?;
+    
+    // 生成边
+    for edge in son_ir.get_all_edges() {
+        let edge_label = match edge.edge_type {
+            EdgeType::Data => "data",
+            EdgeType::Control => "control",
+            EdgeType::Condition => "condition",
+        };
+        
+        let edge_color = match edge.edge_type {
+            EdgeType::Data => "blue",
+            EdgeType::Control => "red",
+            EdgeType::Condition => "green",
+        };
+        
+        writeln!(file, "  Node_{} -> Node_{} [label=\"{}\", color=\"{}\"];", edge.from, edge.to, edge_label, edge_color)?;
+    }
+    
+    writeln!(file, "}}")?;
+    Ok(())
 }

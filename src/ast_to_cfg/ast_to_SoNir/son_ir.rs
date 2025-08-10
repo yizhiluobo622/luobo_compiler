@@ -689,36 +689,24 @@ impl SonIr {
         // 调试信息已移除
     }
     
-    /// 验证图的一致性
+    /// 验证图的完整性
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         
-        // 检查所有边引用的节点是否存在
-        for edge in &self.edges {
-            if !self.nodes.contains_key(&edge.from) {
-                errors.push(format!("边引用不存在的源节点: {}", edge.from));
-            }
-            if !self.nodes.contains_key(&edge.to) {
-                errors.push(format!("边引用不存在的目标节点: {}", edge.to));
+        // 检查所有节点是否都有有效的ID
+        for (id, node) in &self.nodes {
+            if *id != node.id {
+                errors.push(format!("Node ID mismatch: stored ID {}, node ID {}", id, node.id));
             }
         }
         
-        // 检查节点的输入输出一致性
-        for (id, node) in &self.nodes {
-            for &input_id in &node.inputs {
-                if let Some(input_node) = self.nodes.get(&input_id) {
-                    if !input_node.outputs.contains(id) {
-                        errors.push(format!("节点 {} 的输入 {} 没有对应的输出边", id, input_id));
-                    }
-                }
+        // 检查边是否连接到有效的节点
+        for edge in &self.edges {
+            if !self.nodes.contains_key(&edge.from) {
+                errors.push(format!("Edge from non-existent node: {}", edge.from));
             }
-            
-            for &output_id in &node.outputs {
-                if let Some(output_node) = self.nodes.get(&output_id) {
-                    if !output_node.inputs.contains(id) {
-                        errors.push(format!("节点 {} 的输出 {} 没有对应的输入边", id, output_id));
-                    }
-                }
+            if !self.nodes.contains_key(&edge.to) {
+                errors.push(format!("Edge to non-existent node: {}", edge.to));
             }
         }
         
@@ -727,5 +715,214 @@ impl SonIr {
         } else {
             Err(errors)
         }
+    }
+
+    /// 替换节点：用新节点替换指定ID的节点，保持所有连接关系
+    pub fn replace_node(&mut self, old_id: SonNodeId, new_node: SonNode) -> Result<(), String> {
+        // 检查旧节点是否存在
+        let old_node = self.nodes.get(&old_id)
+            .ok_or_else(|| format!("Node {} does not exist", old_id))?;
+        
+        // 保存旧节点的所有连接信息
+        let old_inputs = old_node.inputs.clone();
+        let old_outputs = old_node.outputs.clone();
+        let old_control_inputs = old_node.control_inputs.clone();
+        let old_control_outputs = old_node.control_outputs.clone();
+        
+        // 创建新节点，使用旧节点的ID
+        let mut new_node_with_id = new_node;
+        new_node_with_id.id = old_id;
+        
+        // 复制旧节点的连接信息到新节点
+        new_node_with_id.inputs = old_inputs;
+        new_node_with_id.outputs = old_outputs;
+        new_node_with_id.control_inputs = old_control_inputs;
+        new_node_with_id.control_outputs = old_control_outputs;
+        
+        // 替换节点
+        self.nodes.insert(old_id, new_node_with_id);
+        
+        Ok(())
+    }
+
+    /// 移除节点：移除指定ID的节点，并重新连接其输入输出
+    pub fn remove_node(&mut self, node_id: SonNodeId) -> Result<(), String> {
+        let node = self.nodes.get(&node_id)
+            .ok_or_else(|| format!("Node {} does not exist", node_id))?;
+        
+        // 获取节点的所有连接
+        let inputs = node.inputs.clone();
+        let outputs = node.outputs.clone();
+        let control_inputs = node.control_inputs.clone();
+        let control_outputs = node.control_outputs.clone();
+        
+        // 移除所有相关的边
+        let edges_to_remove: Vec<_> = self.edges.iter()
+            .filter(|edge| edge.from == node_id || edge.to == node_id)
+            .cloned()
+            .collect();
+        
+        for edge in &edges_to_remove {
+            self.remove_edge(edge);
+        }
+        
+        // 重新连接输入和输出节点
+        self.reconnect_nodes_after_removal(node_id, &inputs, &outputs, &control_inputs, &control_outputs);
+        
+        // 移除节点
+        self.nodes.remove(&node_id);
+        
+        Ok(())
+    }
+
+    /// 在移除节点后重新连接其输入输出节点
+    fn reconnect_nodes_after_removal(
+        &mut self,
+        removed_node_id: SonNodeId,
+        inputs: &[SonNodeId],
+        outputs: &[SonNodeId],
+        control_inputs: &[SonNodeId],
+        control_outputs: &[SonNodeId],
+    ) {
+        // 收集需要添加的新边，避免在遍历时修改
+        let mut new_data_edges = Vec::new();
+        let mut new_control_edges = Vec::new();
+        
+        // 对于每个输入节点，将其输出重新连接到输出节点
+        for &input_id in inputs {
+            if let Some(input_node) = self.nodes.get_mut(&input_id) {
+                // 移除对已删除节点的输出引用
+                input_node.outputs.retain(|&id| id != removed_node_id);
+                
+                // 将输入节点的输出重新连接到输出节点
+                for &output_id in outputs {
+                    if output_id != input_id && !input_node.outputs.contains(&output_id) {
+                        input_node.outputs.push(output_id);
+                        new_data_edges.push((input_id, output_id));
+                    }
+                }
+            }
+        }
+        
+        // 对于每个输出节点，将其输入重新连接到输入节点
+        for &output_id in outputs {
+            if let Some(output_node) = self.nodes.get_mut(&output_id) {
+                // 移除对已删除节点的输入引用
+                output_node.inputs.retain(|&id| id != removed_node_id);
+                
+                // 将输出节点的输入重新连接到输入节点
+                for &input_id in inputs {
+                    if input_id != output_id && !output_node.inputs.contains(&input_id) {
+                        output_node.inputs.push(input_id);
+                    }
+                }
+            }
+        }
+        
+        // 处理控制流连接
+        for &control_input_id in control_inputs {
+            if let Some(control_input_node) = self.nodes.get_mut(&control_input_id) {
+                control_input_node.control_outputs.retain(|&id| id != removed_node_id);
+                
+                for &control_output_id in control_outputs {
+                    if control_output_id != control_input_id && !control_input_node.control_outputs.contains(&control_output_id) {
+                        control_input_node.control_outputs.push(control_output_id);
+                        new_control_edges.push((control_input_id, control_output_id));
+                    }
+                }
+            }
+        }
+        
+        for &control_output_id in control_outputs {
+            if let Some(control_output_node) = self.nodes.get_mut(&control_output_id) {
+                control_output_node.control_inputs.retain(|&id| id != removed_node_id);
+                
+                for &control_input_id in control_inputs {
+                    if control_input_id != control_output_id && !control_output_node.control_inputs.contains(&control_input_id) {
+                        control_output_node.control_inputs.push(control_input_id);
+                    }
+                }
+            }
+        }
+        
+        // 在遍历完成后添加新的边
+        for (from, to) in new_data_edges {
+            let new_edge = SonEdge::new(from, to, EdgeType::Data);
+            self.add_edge(new_edge);
+        }
+        
+        for (from, to) in new_control_edges {
+            let new_control_edge = SonEdge::new(from, to, EdgeType::Control);
+            self.add_edge(new_control_edge);
+        }
+    }
+
+    /// 查找连接到指定节点的所有边
+    pub fn get_edges_connected_to_node(&self, node_id: SonNodeId) -> Vec<&SonEdge> {
+        self.edges.iter()
+            .filter(|edge| edge.from == node_id || edge.to == node_id)
+            .collect()
+    }
+
+    /// 查找从指定节点出发的所有边
+    pub fn get_edges_from_node(&self, node_id: SonNodeId) -> Vec<&SonEdge> {
+        self.edges.iter()
+            .filter(|edge| edge.from == node_id)
+            .collect()
+    }
+
+    /// 查找到达指定节点的所有边
+    pub fn get_edges_to_node(&self, node_id: SonNodeId) -> Vec<&SonEdge> {
+        self.edges.iter()
+            .filter(|edge| edge.to == node_id)
+            .collect()
+    }
+
+    /// 检查两个节点之间是否存在边
+    pub fn has_edge(&self, from: SonNodeId, to: SonNodeId, edge_type: EdgeType) -> bool {
+        self.edges.iter()
+            .any(|edge| edge.from == from && edge.to == to && edge.edge_type == edge_type)
+    }
+
+    /// 获取两个节点之间的所有边
+    pub fn get_edges_between(&self, from: SonNodeId, to: SonNodeId) -> Vec<&SonEdge> {
+        self.edges.iter()
+            .filter(|edge| edge.from == from && edge.to == to)
+            .collect()
+    }
+
+    /// 创建常量节点
+    pub fn create_constant_node(&mut self, value: ConstantValue, typ: Type) -> SonNodeId {
+        let constant_kind = SonNodeKind::with_data(OpCode::Constant, NodeData::Constant { value, typ });
+        let constant_node = SonNode::new(0, constant_kind); // ID will be set by add_node
+        self.add_node(constant_node)
+    }
+
+    /// 获取节点的所有前驱节点（输入节点）
+    pub fn get_predecessors(&self, node_id: SonNodeId) -> Vec<SonNodeId> {
+        self.nodes.get(&node_id)
+            .map(|node| node.inputs.clone())
+            .unwrap_or_default()
+    }
+
+    /// 获取节点的所有后继节点（输出节点）
+    pub fn get_successors(&self, node_id: SonNodeId) -> Vec<SonNodeId> {
+        self.nodes.get(&node_id)
+            .map(|node| node.outputs.clone())
+            .unwrap_or_default()
+    }
+
+    /// 获取节点的所有控制流前驱节点
+    pub fn get_control_predecessors(&self, node_id: SonNodeId) -> Vec<SonNodeId> {
+        self.nodes.get(&node_id)
+            .map(|node| node.control_inputs.clone())
+            .unwrap_or_default()
+    }
+
+    /// 获取节点的所有控制流后继节点
+    pub fn get_control_successors(&self, node_id: SonNodeId) -> Vec<SonNodeId> {
+        self.nodes.get(&node_id)
+            .map(|node| node.control_outputs.clone())
+            .unwrap_or_default()
     }
 }
