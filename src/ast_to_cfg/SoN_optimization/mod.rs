@@ -19,6 +19,7 @@ pub mod analysis;
 // Re-export main optimization pipeline and types
 pub use opt_pipeline::{OptimizationPipeline, OptimizationConfig};
 
+pub use constant_propagation::ConstantPropagation;
 pub use cse::CommonSubexpressionElimination;
 pub use node_dce::NodeDCE;
 pub use global_dce::GlobalDCE;

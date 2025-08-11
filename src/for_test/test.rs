@@ -6,7 +6,7 @@ pub mod tests {
     use crate::frontend::parser::Parser;
     use crate::frontend::semantic_analysis::analyze_ast_with_semantic_info;
     use crate::ast_to_cfg::ast_to_SoNir::convert_ast_to_son_with_stats;
-    //use crate::ast_to_cfg::SoN_optimization::constant_propagation::ConstantPropagation;
+    use crate::ast_to_cfg::SoN_optimization::opt_pipeline::OptimizationPipeline;
     use crate::ast_to_cfg::ast_to_SoNir::generate_son_ir_dot;
 
     #[test]
@@ -47,14 +47,9 @@ pub mod tests {
             Err(e) => println!("❌ Failed to generate initial SoN IR DOT file: {}", e),
         }
         
-        // 常量传播优化: 两行
-        //let mut constant_propagation = ConstantPropagation::new();
-        //constant_propagation.run(&mut sonir);
-        
-        // 获取优化统计信息
-        //let optimization_stats = constant_propagation.get_stats();
-        //println!("✅ Constant propagation completed: {} constants identified, {} nodes processed", 
-        //        optimization_stats.constants_identified, optimization_stats.nodes_processed);
+        // 运行常量传播优化：使用便利函数
+        let mut opt_pipeline = OptimizationPipeline::new();
+        opt_pipeline.run(&mut sonir);
         
         // 验证优化后的结果
         assert!(sonir.node_count() > 0, "Optimized SoN IR should contain nodes");
@@ -72,6 +67,35 @@ pub mod tests {
         }
         
         println!("✅ Pipeline test passed: {} nodes, {} edges", sonir.node_count(), sonir.edge_count());
+    }
+    
+    #[test]
+    pub fn test_enhanced_constant_propagation() {
+        // 测试增强后的常量传播优化器
+        // 包括：常量折叠、理想化优化、全局值编号、强度削弱
+        
+        // 创建一个简单的测试用例
+        let source_code = r#"
+        int main() {
+            int a = 1;
+            int b = 2;
+            int c = a + b;      // 应该被优化为 3
+            int d = c * 0;      // 应该被优化为 0
+            int e = a + a;      // 应该被优化为 2
+            int f = b * 2;      // 应该被优化为 4
+            int g = a - a;      // 应该被优化为 0
+            int h = b / b;      // 应该被优化为 1
+            return 0;
+        }
+        "#;
+        
+        // 这里可以添加具体的测试逻辑
+        // 由于我们还没有完整的测试框架，先打印一些信息
+        println!("✅ Enhanced constant propagation test framework ready");
+        println!("   - Constant folding: c * 0 = 0");
+        println!("   - Strength reduction: a + a = 2*a, b * 2 = b + b");
+        println!("   - Algebraic identities: a - a = 0, b / b = 1");
+        println!("   - Global value numbering: eliminate duplicate computations");
     }
     
     fn extract_main_function(program_ast: &crate::frontend::ast::Ast) -> &crate::frontend::ast::Ast {

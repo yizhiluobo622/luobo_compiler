@@ -3,7 +3,7 @@
 
 use crate::ast_to_cfg::ast_to_SoNir::son_ir::SonIr;
 use crate::ast_to_cfg::SoN_optimization::{
-    //constant_propagation::ConstantPropagation,
+    constant_propagation::ConstantPropagation,
     cse::CommonSubexpressionElimination,
     node_dce::NodeDCE,
     global_dce::GlobalDCE,
@@ -11,7 +11,7 @@ use crate::ast_to_cfg::SoN_optimization::{
 
 pub struct OptimizationPipeline {
     // First round: basic optimizations
-    //constant_propagation: ConstantPropagation,
+    constant_propagation: ConstantPropagation,
     cse: CommonSubexpressionElimination,
     node_dce: NodeDCE,
     global_dce: GlobalDCE,
@@ -41,7 +41,7 @@ impl Default for OptimizationConfig {
 impl OptimizationPipeline {
     pub fn new() -> Self {
         Self {
-            //constant_propagation: ConstantPropagation::new(),
+            constant_propagation: ConstantPropagation::new(),
             cse: CommonSubexpressionElimination::new(),
             node_dce: NodeDCE::new(),
             global_dce: GlobalDCE::new(),
@@ -51,7 +51,7 @@ impl OptimizationPipeline {
     
     pub fn with_config(config: OptimizationConfig) -> Self {
         Self {
-            //constant_propagation: ConstantPropagation::new(),
+            constant_propagation: ConstantPropagation::new(),
             cse: CommonSubexpressionElimination::new(),
             node_dce: NodeDCE::new(),
             global_dce: GlobalDCE::new(),
@@ -82,7 +82,7 @@ impl OptimizationPipeline {
             }
             
             // Run basic optimizations in order
-            //self.constant_propagation.run(son_ir);
+            self.constant_propagation.run(son_ir);
             self.cse.run(son_ir);
             self.node_dce.run(son_ir);
             self.global_dce.run(son_ir);
