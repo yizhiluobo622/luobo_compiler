@@ -2,7 +2,7 @@
 // This module contains various optimization passes for SoN IR
 
 pub mod constant_propagation;
-pub mod cse;
+pub mod gvngcmcse;
 pub mod node_dce;
 pub mod global_dce;
 pub mod opt_pipeline;
@@ -20,6 +20,6 @@ pub mod analysis;
 pub use opt_pipeline::{OptimizationPipeline, OptimizationConfig};
 
 pub use constant_propagation::ConstantPropagation;
-pub use cse::CommonSubexpressionElimination;
+pub use gvngcmcse::CombinedOptimizer;
 pub use node_dce::NodeDCE;
 pub use global_dce::GlobalDCE;

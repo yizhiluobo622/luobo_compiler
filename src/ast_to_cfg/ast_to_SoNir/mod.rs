@@ -250,6 +250,13 @@ pub fn generate_son_ir_dot(son_ir: &SonIr, output_path: &str) -> std::io::Result
             SonNodeKind { opcode: OpCode::Load, data: NodeData::Load { name, .. } } => {
                 format!("Load\\n{}", name)
             }
+            SonNodeKind { opcode: OpCode::Call, data: NodeData::Call { function_name, arguments, .. } } => {
+                let args_str = arguments.iter()
+                    .map(|id| format!("Node_{}", id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Call\\n{}\\nArgs: [{}]", function_name, args_str)
+            }
             SonNodeKind { opcode: OpCode::Return, data: NodeData::None } => "Return".to_string(),
             SonNodeKind { opcode: OpCode::Start, data: NodeData::None } => "Start".to_string(),
             _ => format!("{:?}", node.kind.opcode),

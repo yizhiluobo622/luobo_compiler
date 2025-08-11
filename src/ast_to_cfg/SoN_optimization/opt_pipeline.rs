@@ -4,7 +4,7 @@
 use crate::ast_to_cfg::ast_to_SoNir::son_ir::SonIr;
 use crate::ast_to_cfg::SoN_optimization::{
     constant_propagation::ConstantPropagation,
-    cse::CommonSubexpressionElimination,
+    gvngcmcse::CombinedOptimizer,
     node_dce::NodeDCE,
     global_dce::GlobalDCE,
 };
@@ -12,7 +12,7 @@ use crate::ast_to_cfg::SoN_optimization::{
 pub struct OptimizationPipeline {
     // First round: basic optimizations
     constant_propagation: ConstantPropagation,
-    cse: CommonSubexpressionElimination,
+    combined_optimizer: CombinedOptimizer,
     node_dce: NodeDCE,
     global_dce: GlobalDCE,
     
@@ -32,7 +32,7 @@ impl Default for OptimizationConfig {
         Self {
             enable_round1: true,
             enable_round2: false,  // Disabled by default until we implement pattern matching
-            max_iterations: 10,    // Increased from 3 to 10 for better constant propagation
+            max_iterations: 3,     // 3次迭代通常足够：常量传播2次 + 清理1次
             enable_debug: false,
         }
     }
@@ -42,7 +42,7 @@ impl OptimizationPipeline {
     pub fn new() -> Self {
         Self {
             constant_propagation: ConstantPropagation::new(),
-            cse: CommonSubexpressionElimination::new(),
+            combined_optimizer: CombinedOptimizer::new(),
             node_dce: NodeDCE::new(),
             global_dce: GlobalDCE::new(),
             config: OptimizationConfig::default(),
@@ -52,7 +52,7 @@ impl OptimizationPipeline {
     pub fn with_config(config: OptimizationConfig) -> Self {
         Self {
             constant_propagation: ConstantPropagation::new(),
-            cse: CommonSubexpressionElimination::new(),
+            combined_optimizer: CombinedOptimizer::new(),
             node_dce: NodeDCE::new(),
             global_dce: GlobalDCE::new(),
             config,
@@ -70,7 +70,7 @@ impl OptimizationPipeline {
         }
     }
     
-    /// Round 1: Basic optimizations (constant propagation, CSE, DCE)
+    /// Round 1: Basic optimizations (constant propagation, combined optimizer, DCE)
     fn run_round1_basic_optimizations(&mut self, son_ir: &mut SonIr) {
         if self.config.enable_debug {
             println!("Starting Round 1: Basic Optimizations");
@@ -83,7 +83,7 @@ impl OptimizationPipeline {
             
             // Run basic optimizations in order
             self.constant_propagation.run(son_ir);
-            self.cse.run(son_ir);
+            self.combined_optimizer.run(son_ir);
             self.node_dce.run(son_ir);
             self.global_dce.run(son_ir);
             

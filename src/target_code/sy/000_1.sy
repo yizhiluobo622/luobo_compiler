@@ -1,10 +1,13 @@
+int gc(int a){
+    return a + 1;
+}
 int main(){
+
     const int a = 1;
     const int b = 2;
-    int c = a + b;        // 应该被优化为 c = 3
-    int d = c * 2;        // 应该被优化为 d = 6
-    int e = d - a;        // 应该被优化为 e = 5
-    int f = e / b;        // 应该被优化为 f = 2
+    int g = a + gc(b);
+    int h = a + gc(b);
+     
     
-    return f;
+    return g;
 }

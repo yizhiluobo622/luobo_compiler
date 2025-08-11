@@ -239,9 +239,9 @@ impl<'a> SonIrBuilder<'a> {
                                         true // init - 标记为初始化
                                     );
                                     
-                                    // 添加数据流边：从初始值到Store，从Store到变量
+                                    // 添加数据流边：从初始值到Store（Store节点只有输入边，没有输出数据边）
                                     self.son_ir.add_edge(SonEdge::new(init_result, store_id, EdgeType::Data));
-                                    self.son_ir.add_edge(SonEdge::new(store_id, var_id, EdgeType::Data));
+                                    // Store节点不应该有输出数据边，因为它是副作用操作
                                     
                                     // 返回Store节点ID，这样控制流会经过初始化
                                     store_id
@@ -1090,25 +1090,29 @@ impl<'a> SonIrBuilder<'a> {
     fn create_store_node(&mut self, name: String, alias: u32, declared_type: Type, 
                         mem: Option<SonNodeId>, ptr: Option<SonNodeId>, offset: Option<SonNodeId>, 
                         value: Option<SonNodeId>, init: bool) -> SonNodeId {
-        let mut input_nodes = Vec::new();
+        // 创建Store节点
+        let kind = SonNodeKind::with_data(
+            OpCode::Store,
+            NodeData::Store { name, alias, declared_type, mem, ptr, offset, value, init }
+        );
+        let store_id = self.son_ir.add_node(SonNode::new(0, kind));
+        
+        // Store节点只添加输入数据边，不添加输出数据边
+        // 因为Store是副作用操作，不产生值
         if let Some(mem_id) = mem {
-            input_nodes.push(mem_id);
+            self.son_ir.add_edge(SonEdge::new(mem_id, store_id, EdgeType::Data));
         }
         if let Some(ptr_id) = ptr {
-            input_nodes.push(ptr_id);
+            self.son_ir.add_edge(SonEdge::new(ptr_id, store_id, EdgeType::Data));
         }
         if let Some(offset_id) = offset {
-            input_nodes.push(offset_id);
+            self.son_ir.add_edge(SonEdge::new(offset_id, store_id, EdgeType::Data));
         }
         if let Some(value_id) = value {
-            input_nodes.push(value_id);
+            self.son_ir.add_edge(SonEdge::new(value_id, store_id, EdgeType::Data));
         }
         
-        self.create_node_with_data_edges(
-            OpCode::Store,
-            NodeData::Store { name, alias, declared_type, mem, ptr, offset, value, init },
-            input_nodes
-        )
+        store_id
     }
 
     /// 创建数组访问节点
@@ -1192,13 +1196,18 @@ impl<'a> SonIrBuilder<'a> {
         // 检查是否有孤立节点（没有输入边）
         for (node_id, node) in self.son_ir.get_all_nodes() {
             if *node_id != entry_node {
-                // 检查节点类型，某些节点不需要控制流输入
+                // 检查节点类型，某些节点不需要输入边
                 let node_kind = &node.kind;
                 let is_parameter_node = matches!(node_kind.opcode, OpCode::Parameter);
                 let is_constant_node = matches!(node_kind.opcode, OpCode::Constant);
+                let is_start_node = matches!(node_kind.opcode, OpCode::Start);
+                let is_local_node = matches!(node_kind.opcode, OpCode::Local);
                 
-                if !is_parameter_node && !is_constant_node && node.inputs.is_empty() && node.control_inputs.is_empty() {
-                    let error_msg = format!("节点 {} 没有输入边，可能不可达", node_id);
+                // 这些节点类型不需要输入边
+                let needs_inputs = !is_parameter_node && !is_constant_node && !is_start_node && !is_local_node;
+                
+                if needs_inputs && node.inputs.is_empty() && node.control_inputs.is_empty() {
+                    let error_msg = format!("节点 {} ({:?}) 没有输入边，可能不可达", node_id, node_kind.opcode);
                     errors.push(error_msg);
                 }
             }

@@ -27,6 +27,9 @@ pub mod tests {
         
         // AST to SoN IR: 两行
         let function_ast = extract_main_function(&annotated_ast);
+        
+        // 函数信息已提取
+        
         let sonir_result = convert_ast_to_son_with_stats(function_ast).expect("AST to SoN IR conversion failed");
         
         // 获取初始SoN IR
@@ -47,7 +50,7 @@ pub mod tests {
             Err(e) => println!("❌ Failed to generate initial SoN IR DOT file: {}", e),
         }
         
-        // 运行常量传播优化：使用便利函数
+        // 运行优化链：使用便利函数
         let mut opt_pipeline = OptimizationPipeline::new();
         opt_pipeline.run(&mut sonir);
         
@@ -101,7 +104,16 @@ pub mod tests {
     fn extract_main_function(program_ast: &crate::frontend::ast::Ast) -> &crate::frontend::ast::Ast {
         match &program_ast.kind {
             crate::frontend::ast::AstKind::Program { functions, .. } => {
-                functions.first().expect("No functions found in program")
+                // 查找main函数，如果没有则使用第一个函数
+                functions.iter()
+                    .find(|func| {
+                        if let crate::frontend::ast::AstKind::Function { function_name, .. } = &func.kind {
+                            function_name == "main"
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or_else(|| functions.first().expect("No functions found in program"))
             }
             _ => panic!("Root AST is not a Program"),
         }
