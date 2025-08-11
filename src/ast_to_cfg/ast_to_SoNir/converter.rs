@@ -5,6 +5,7 @@ use super::son_ir::{
     SonIr, SonNode, SonNodeKind, SonNodeId, SonEdge, OpCode, NodeData, 
     ConstantValue, EdgeType
 };
+use super::scope_manager::ScopeManager;
 
 /// AST 到 Sea of Nodes IR 转换器
 pub struct AstToSonConverter;
@@ -14,6 +15,7 @@ pub struct AstToSonConverter;
 pub struct ConversionResult {
     pub son_ir: SonIr,
     pub stats: ConversionStats,
+    pub scope_stats: Option<crate::ast_to_cfg::ast_to_SoNir::scope_manager::ScopeStats>,
 }
 
 /// 转换统计信息
@@ -61,6 +63,8 @@ pub struct SonIrBuilder<'a> {
     symbol_table: Option<&'a crate::frontend::SemanticAnalyzer::symbol_table::SymbolTable>,
     /// 类型系统引用，用于类型兼容性检查
     type_system: Option<&'a crate::frontend::SemanticAnalyzer::type_system::TypeSystem>,
+    /// 作用域管理器
+    scope_manager: ScopeManager,
 }
 impl<'a> SonIrBuilder<'a> {
     /// 创建新的构建器
@@ -77,6 +81,7 @@ impl<'a> SonIrBuilder<'a> {
             type_errors: Vec::new(),
             symbol_table: None,
             type_system: None,
+            scope_manager: ScopeManager::new(),
         }
     }
 
@@ -94,6 +99,7 @@ impl<'a> SonIrBuilder<'a> {
             type_errors: Vec::new(),
             symbol_table: None,
             type_system: None,
+            scope_manager: ScopeManager::new(),
         }
     }
 
@@ -116,6 +122,7 @@ impl<'a> SonIrBuilder<'a> {
             type_errors: Vec::new(),
             symbol_table: Some(symbol_table),
             type_system: Some(type_system),
+            scope_manager: ScopeManager::new(),
         }
     }
 
@@ -125,6 +132,9 @@ impl<'a> SonIrBuilder<'a> {
             AstKind::Function { function_name, return_type, parameters, function_body } => {
                 // 设置当前函数返回类型
                 self.current_function_return_type = return_type.clone();
+                
+                // 进入函数作用域
+                self.scope_manager.enter_scope(&format!("function_{}", function_name));
                 
                 // 创建Start节点
                 let start_id = self.create_start_node();
@@ -142,6 +152,26 @@ impl<'a> SonIrBuilder<'a> {
                         // 将参数添加到变量映射
                         self.variable_map.insert(variable_name.clone(), param_id);
                         self.variable_declared.insert(variable_name.clone(), true);
+                        
+                        // 使用 ScopeManager 声明参数变量
+                        if let Err(e) = self.scope_manager.declare_variable(
+                            variable_name, 
+                            variable_type.clone(), 
+                            Some(param_id), 
+                            self.son_ir
+                        ) {
+                            // 如果 ScopeManager 失败，记录错误但继续
+                            if self.strict_type_checking {
+                                self.type_errors.push(format!("参数声明失败: {}", e));
+                            }
+                        }
+                        
+                        // 将参数节点连接到当前作用域的Scope节点
+                        if let Some(scope_id) = self.scope_manager.current_scope_id() {
+                            if let Some(&scope_node_id) = self.scope_manager.get_scope_node_id(scope_id) {
+                                self.son_ir.add_edge(SonEdge::new(param_id, scope_node_id, EdgeType::Data));
+                            }
+                        }
                     }
                 }
                 
@@ -170,6 +200,8 @@ impl<'a> SonIrBuilder<'a> {
                 
                 // 🔍 调试：显示最终的图结构信息
                 
+                // 退出函数作用域
+                self.scope_manager.exit_scope(self.son_ir);
                 
                 Ok(body_result)
             }
@@ -206,6 +238,9 @@ impl<'a> SonIrBuilder<'a> {
                     return Ok(region_id);
                 }
                 
+                // 进入复合语句作用域
+                let scope_id = self.scope_manager.enter_scope("compound");
+                
                 let mut last_result = None;
                 let mut previous_control = self.current_control_flow;
                 
@@ -215,10 +250,31 @@ impl<'a> SonIrBuilder<'a> {
                             self.build_statement(stmt_kind)?
                         }
                         AstKind::VariableDeclaration { variable_name, variable_type, initial_value, is_const } => {
-                            // 处理变量声明
-                            let var_id = self.create_local_node(variable_name.clone(), variable_type.clone());
+                            // 使用 ScopeManager 声明变量
+                            let var_id = match self.scope_manager.declare_variable(
+                                variable_name,
+                                variable_type.clone(),
+                                None, // 先声明，稍后设置初始值
+                                self.son_ir
+                            ) {
+                                Ok(node_id) => node_id,
+                                Err(e) => {
+                                    // 如果 ScopeManager 失败，降级到原来的实现
+                                    if self.strict_type_checking {
+                                        self.type_errors.push(format!("变量声明失败: {}", e));
+                                    }
+                                    self.create_local_node(variable_name.clone(), variable_type.clone())
+                                }
+                            };
                             
-                            // 将变量添加到变量映射
+                            // 将变量节点连接到当前作用域的Scope节点
+                            if let Some(scope_id) = self.scope_manager.current_scope_id() {
+                                if let Some(&scope_node_id) = self.scope_manager.get_scope_node_id(scope_id) {
+                                    self.son_ir.add_edge(SonEdge::new(var_id, scope_node_id, EdgeType::Data));
+                                }
+                            }
+                            
+                            // 将变量添加到变量映射（保持向后兼容）
                             self.variable_map.insert(variable_name.clone(), var_id);
                             self.variable_declared.insert(variable_name.clone(), true);
                             
@@ -242,6 +298,20 @@ impl<'a> SonIrBuilder<'a> {
                                     // 添加数据流边：从初始值到Store（Store节点只有输入边，没有输出数据边）
                                     self.son_ir.add_edge(SonEdge::new(init_result, store_id, EdgeType::Data));
                                     // Store节点不应该有输出数据边，因为它是副作用操作
+                                    
+                                    // 更新 ScopeManager 中的变量值
+                                    if let Err(e) = self.scope_manager.update_variable(
+                                        variable_name,
+                                        store_id,
+                                        self.son_ir
+                                    ) {
+                                        if self.strict_type_checking {
+                                            self.type_errors.push(format!("变量更新失败: {}", e));
+                                        }
+                                    }
+                                    
+                                    // Store节点的控制流连接由复合语句处理逻辑统一管理
+                                    // 这里不需要手动添加控制边
                                     
                                     // 返回Store节点ID，这样控制流会经过初始化
                                     store_id
@@ -273,6 +343,9 @@ impl<'a> SonIrBuilder<'a> {
                 if let Some(result) = last_result {
                     self.current_control_flow = Some(result);
                 }
+                
+                // 退出复合语句作用域
+                self.scope_manager.exit_scope(self.son_ir);
                 
                 Ok(last_result.unwrap_or_else(|| self.create_region_node()))
             }
@@ -753,10 +826,25 @@ impl<'a> SonIrBuilder<'a> {
 
     /// 声明变量
     fn declare_variable(&mut self, name: String, typ: Type) -> SonNodeId {
-        let local_id = self.create_local_node(name.clone(), typ);
-        self.variable_map.insert(name.clone(), local_id);
-        self.variable_declared.insert(name, true);
-        local_id
+        // 使用 ScopeManager 声明变量
+        match self.scope_manager.declare_variable(&name, typ.clone(), None, self.son_ir) {
+            Ok(node_id) => {
+                // 添加到变量映射（保持向后兼容）
+                self.variable_map.insert(name.clone(), node_id);
+                self.variable_declared.insert(name, true);
+                node_id
+            }
+            Err(e) => {
+                // 如果 ScopeManager 失败，降级到原来的实现
+                if self.strict_type_checking {
+                    self.type_errors.push(format!("变量声明失败: {}", e));
+                }
+                let local_id = self.create_local_node(name.clone(), typ);
+                self.variable_map.insert(name.clone(), local_id);
+                self.variable_declared.insert(name, true);
+                local_id
+            }
+        }
     }
 
     /// 从上下文推断变量类型
@@ -1202,9 +1290,11 @@ impl<'a> SonIrBuilder<'a> {
                 let is_constant_node = matches!(node_kind.opcode, OpCode::Constant);
                 let is_start_node = matches!(node_kind.opcode, OpCode::Start);
                 let is_local_node = matches!(node_kind.opcode, OpCode::Local);
+                let is_scope_node = matches!(node_kind.opcode, OpCode::Scope);
+                let is_store_node = matches!(node_kind.opcode, OpCode::Store);
                 
                 // 这些节点类型不需要输入边
-                let needs_inputs = !is_parameter_node && !is_constant_node && !is_start_node && !is_local_node;
+                let needs_inputs = !is_parameter_node && !is_constant_node && !is_start_node && !is_local_node && !is_scope_node && !is_store_node;
                 
                 if needs_inputs && node.inputs.is_empty() && node.control_inputs.is_empty() {
                     let error_msg = format!("节点 {} ({:?}) 没有输入边，可能不可达", node_id, node_kind.opcode);
@@ -1265,6 +1355,16 @@ impl<'a> SonIrBuilder<'a> {
     /// 清除类型错误
     fn clear_type_errors(&mut self) {
         self.type_errors.clear();
+    }
+    
+    /// 获取作用域统计信息
+    pub fn get_scope_stats(&self) -> crate::ast_to_cfg::ast_to_SoNir::scope_manager::ScopeStats {
+        self.scope_manager.get_scope_stats()
+    }
+    
+    /// 打印作用域信息（用于调试）
+    pub fn print_scope_info(&self) {
+        self.scope_manager.print_scope_info();
     }
 
     /// 设置语义信息（符号表和类型系统）
@@ -1327,10 +1427,12 @@ impl AstToSonConverter {
         }
         
         let stats = builder.get_build_stats();
+        let scope_stats = builder.get_scope_stats();
         
         Ok(ConversionResult {
             son_ir,
             stats,
+            scope_stats: Some(scope_stats),
         })
     }
 
@@ -1359,10 +1461,12 @@ impl AstToSonConverter {
         }
         
         let stats = builder.get_build_stats();
+        let scope_stats = builder.get_scope_stats();
         
         Ok(ConversionResult {
             son_ir,
             stats,
+            scope_stats: Some(scope_stats),
         })
     }
 

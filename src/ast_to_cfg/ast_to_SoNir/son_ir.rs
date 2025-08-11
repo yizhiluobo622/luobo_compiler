@@ -74,6 +74,9 @@ pub enum OpCode {
     Proj,        // 投影节点
     CProj,       // 控制投影节点
     
+    // 作用域管理
+    Scope,       // 作用域节点
+    
     // 位运算
     BitwiseAnd,
     BitwiseOr,
@@ -194,6 +197,13 @@ pub enum NodeData {
         label: String,
     },
     
+    // 作用域节点
+    Scope {
+        symbol_tables: Vec<HashMap<String, usize>>, // 符号表栈
+        scope_level: usize,                         // 当前作用域级别
+        parent_scope: Option<SonNodeId>,            // 父作用域节点
+    },
+    
     // 空数据
     None,
 }
@@ -263,6 +273,7 @@ impl SonNodeKind {
             OpCode::Phi => "Phi".to_string(),
             OpCode::Proj => "Proj".to_string(),
             OpCode::CProj => "CProj".to_string(),
+            OpCode::Scope => "Scope".to_string(),
             OpCode::BitwiseAnd => "&".to_string(),
             OpCode::BitwiseOr => "|".to_string(),
             OpCode::BitwiseXor => "^".to_string(),

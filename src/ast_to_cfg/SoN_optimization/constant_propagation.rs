@@ -816,6 +816,9 @@ impl ConstantPropagation {
                             }
                         }
                     }
+                    NodeData::Scope { .. } => {
+                        // Scope 节点不直接引用其他节点ID，通过 symbol_tables 管理
+                    }
                     NodeData::Constant { .. } | NodeData::Local { .. } | NodeData::Parameter { .. } | 
                     NodeData::Start { .. } | NodeData::Proj { .. } | NodeData::CProj { .. } | NodeData::None => {
                         // 这些节点不引用其他节点ID

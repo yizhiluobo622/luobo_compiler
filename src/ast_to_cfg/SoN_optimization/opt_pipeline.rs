@@ -7,6 +7,7 @@ use crate::ast_to_cfg::SoN_optimization::{
     gvngcmcse::CombinedOptimizer,
     node_dce::NodeDCE,
     global_dce::GlobalDCE,
+    peephole::PeepholeOptimizer,
 };
 
 pub struct OptimizationPipeline {
@@ -15,6 +16,9 @@ pub struct OptimizationPipeline {
     combined_optimizer: CombinedOptimizer,
     node_dce: NodeDCE,
     global_dce: GlobalDCE,
+    
+    // Second round: peephole optimizations
+    peephole_optimizer: PeepholeOptimizer,
     
     // Configuration
     config: OptimizationConfig,
@@ -45,6 +49,7 @@ impl OptimizationPipeline {
             combined_optimizer: CombinedOptimizer::new(),
             node_dce: NodeDCE::new(),
             global_dce: GlobalDCE::new(),
+            peephole_optimizer: PeepholeOptimizer::new(),
             config: OptimizationConfig::default(),
         }
     }
@@ -55,6 +60,7 @@ impl OptimizationPipeline {
             combined_optimizer: CombinedOptimizer::new(),
             node_dce: NodeDCE::new(),
             global_dce: GlobalDCE::new(),
+            peephole_optimizer: PeepholeOptimizer::new(),
             config,
         }
     }
@@ -92,17 +98,18 @@ impl OptimizationPipeline {
         }
     }
     
-    /// Round 2: Advanced optimizations (pattern matching, peephole, local inlining)
+    /// Round 2: Advanced optimizations (peephole optimization)
     fn run_round2_advanced_optimizations(&mut self, son_ir: &mut SonIr) {
         if self.config.enable_debug {
-            println!("Starting Round 2: Advanced Optimizations");
+            println!("Starting Round 2: Peephole Optimizations");
         }
         
-        // TODO: Implement when we have pattern matching, peephole, and inlining
-        // For now, this is a placeholder
+        // Run peephole optimization
+        self.peephole_optimizer.run(son_ir);
+        
         if self.config.enable_debug {
+            println!("  Peephole optimization: Completed");
             println!("  Pattern matching: Not implemented yet");
-            println!("  Peephole optimization: Not implemented yet");
             println!("  Local inlining: Not implemented yet");
         }
     }

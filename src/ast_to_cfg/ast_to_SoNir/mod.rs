@@ -6,6 +6,7 @@
 pub mod son_ir;
 pub mod node_mapping;
 pub mod converter;
+pub mod scope_manager;
 
 // 重新导出主要的类型和结构体
 pub use son_ir::{
@@ -29,6 +30,15 @@ pub use converter::{
     ConversionStats,
     ConversionError,
 };
+
+pub use scope_manager::{
+    ScopeManager,
+    ScopeInfo,
+    ScopeStats,
+};
+
+#[cfg(feature = "demo")]
+pub mod chapter3_demo;
 
 // 重新导出常用的操作码，方便外部使用
 pub use son_ir::OpCode::{
