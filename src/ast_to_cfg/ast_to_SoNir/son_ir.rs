@@ -20,10 +20,9 @@ pub enum OpCode {
     // 控制流操作
     Start,
     Stop,
-    Region,
+    Region,      // 控制流合并点
     If,
     Loop,
-    Merge,
     Return,
     Break,
     Continue,
@@ -71,9 +70,9 @@ pub enum OpCode {
     Cast,
     
     // 特殊节点
-    Phi,
-    Proj,
-    CProj,
+    Phi,         // 值合并节点
+    Proj,        // 投影节点
+    CProj,       // 控制投影节点
     
     // 位运算
     BitwiseAnd,
@@ -182,6 +181,7 @@ pub enum NodeData {
     
     // 特殊节点
     Phi {
+        label: String,
         typ: Type,
         inputs: Vec<Option<SonNodeId>>,
     },
@@ -216,7 +216,7 @@ impl SonNodeKind {
     pub fn is_control_flow(&self) -> bool {
         matches!(self.opcode, 
             OpCode::Start | OpCode::Stop | OpCode::Region | 
-            OpCode::If | OpCode::Loop | OpCode::Merge |
+            OpCode::If | OpCode::Loop |
             OpCode::Return | OpCode::Break | OpCode::Continue
         )
     }
@@ -234,7 +234,7 @@ impl SonNodeKind {
             OpCode::Region => "Region".to_string(),
             OpCode::If => "If".to_string(),
             OpCode::Loop => "Loop".to_string(),
-            OpCode::Merge => "Merge".to_string(),
+
             OpCode::Constant => "Constant".to_string(),
             OpCode::Parameter => "Parameter".to_string(),
             OpCode::Local => "Local".to_string(),
@@ -436,12 +436,10 @@ impl SonNode {
 /// 边类型
 #[derive(Debug, Clone, PartialEq)]
 pub enum EdgeType {
-    /// 数据依赖边
+    /// 数据依赖边（空心箭头）
     Data,
-    /// 控制流边
+    /// 控制依赖边（实心箭头）
     Control,
-    /// 条件边（用于分支）
-    Condition,
 }
 
 /// Sea of Nodes IR 边
@@ -581,7 +579,6 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => from_node.add_output(edge.to),
                 EdgeType::Control => from_node.add_control_output(edge.to),
-                EdgeType::Condition => from_node.add_control_output(edge.to),
             }
         }
         
@@ -589,7 +586,6 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => to_node.add_input(edge.from),
                 EdgeType::Control => to_node.add_control_input(edge.from),
-                EdgeType::Condition => to_node.add_control_input(edge.from),
             }
         }
         
@@ -603,7 +599,6 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => from_node.remove_output(edge.to),
                 EdgeType::Control => from_node.remove_control_output(edge.to),
-                EdgeType::Condition => from_node.remove_control_output(edge.to),
             }
         }
         
@@ -611,7 +606,6 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => to_node.remove_input(edge.from),
                 EdgeType::Control => to_node.remove_control_input(edge.from),
-                EdgeType::Condition => to_node.remove_control_input(edge.from),
             }
         }
         

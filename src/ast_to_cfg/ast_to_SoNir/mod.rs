@@ -38,7 +38,6 @@ pub use son_ir::OpCode::{
     Region,
     If,
     Loop,
-    Merge,
     Return,
     Break,
     Continue,
@@ -114,7 +113,7 @@ pub use son_ir::ConstantValue::{
 pub use son_ir::EdgeType::{
     Data,
     Control,
-    Condition,
+    
 };
 
 // 重新导出节点数据类型
@@ -276,13 +275,11 @@ pub fn generate_son_ir_dot(son_ir: &SonIr, output_path: &str) -> std::io::Result
         let edge_label = match edge.edge_type {
             EdgeType::Data => "data",
             EdgeType::Control => "control",
-            EdgeType::Condition => "condition",
         };
         
         let edge_color = match edge.edge_type {
             EdgeType::Data => "blue",
             EdgeType::Control => "red",
-            EdgeType::Condition => "green",
         };
         
         writeln!(file, "  Node_{} -> Node_{} [label=\"{}\", color=\"{}\"];", edge.from, edge.to, edge_label, edge_color)?;

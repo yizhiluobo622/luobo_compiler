@@ -343,8 +343,8 @@ impl<'a> SonIrBuilder<'a> {
                     self.create_region_node()
                 };
                 
-                // 创建Merge节点
-                let merge_id = self.create_merge_node();
+                // 创建Region节点
+                let merge_id = self.create_region_node();
                 
                 // 连接控制流
                 if let Some(control) = self.current_control_flow {
@@ -378,8 +378,8 @@ impl<'a> SonIrBuilder<'a> {
                     return Err(ConversionError::UnsupportedNodeType("while循环体必须是语句".to_string()));
                 };
                 
-                // 创建Merge节点
-                let merge_id = self.create_merge_node();
+                // 创建Region节点
+                let merge_id = self.create_region_node();
                 
                 // 连接控制流
                 if let Some(control) = self.current_control_flow {
@@ -444,8 +444,8 @@ impl<'a> SonIrBuilder<'a> {
                     self.son_ir.add_edge(SonEdge::new(body_id, loop_id, EdgeType::Control));
                 }
                 
-                // 创建Merge节点
-                let merge_id = self.create_merge_node();
+                // 创建Region节点
+                let merge_id = self.create_region_node();
                 
                 // 连接控制流
                 if let Some(control) = self.current_control_flow {
@@ -1058,14 +1058,20 @@ impl<'a> SonIrBuilder<'a> {
         self.son_ir.add_node(SonNode::new(0, kind))
     }
 
-    /// 创建控制流合并节点
-    /// 
-    /// 注意：虽然函数名为 create_merge_node，但实际创建的是 OpCode::Region 类型的节点。
-    /// 这个 Region 节点在控制流中用作"合并点"，用于合并来自不同分支的控制流。
-    /// 例如：在 if-else 语句中，then 和 else 分支都会汇聚到这个合并点。
-    fn create_merge_node(&mut self) -> SonNodeId {
-        let kind = SonNodeKind::new(OpCode::Region);
-        self.son_ir.add_node(SonNode::new(0, kind))
+
+    
+    fn create_phi_node(&mut self, label: String, typ: Type, inputs: Vec<Option<SonNodeId>>) -> SonNodeId {
+        let kind = SonNodeKind::with_data(OpCode::Phi, NodeData::Phi { label, typ, inputs: inputs.clone() });
+        let phi_id = self.son_ir.add_node(SonNode::new(0, kind));
+        
+        // 添加数据依赖边
+        for input in &inputs {
+            if let Some(input_id) = input {
+                self.son_ir.add_edge(SonEdge::new(*input_id, phi_id, EdgeType::Data));
+            }
+        }
+        
+        phi_id
     }
 
     /// 创建Break节点
