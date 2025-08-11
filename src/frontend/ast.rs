@@ -247,7 +247,7 @@ pub enum UnaryOperator {
 }
 
 /// 类型
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     IntType,
     FloatType,
@@ -265,6 +265,34 @@ pub enum Type {
         parameter_types: Vec<Type>,
         return_type: Box<Type>,
     },
+}
+
+impl Type {
+    /// 检查类型是否为常量类型
+    pub fn is_constant(&self) -> bool {
+        match self {
+            Type::IntType | Type::FloatType | Type::CharType | Type::BoolType => true,
+            Type::ArrayType { element_type, .. } => element_type.is_constant(),
+            Type::PointerType { target_type } => target_type.is_constant(),
+            Type::FunctionType { .. } => false,
+            Type::VoidType => false,
+        }
+    }
+
+    /// 检查类型是否兼容（可以安全地转换）
+    pub fn is_compatible_with(&self, other: &Type) -> bool {
+        match (self, other) {
+            (t1, t2) => t1 == t2 || {
+                // 检查是否可以安全转换
+                match (t1, t2) {
+                    (Type::IntType, Type::FloatType) => true,
+                    (Type::CharType, Type::IntType) => true,
+                    (Type::BoolType, Type::IntType) => true,
+                    _ => false,
+                }
+            }
+        }
+    }
 }
 
 impl Ast {

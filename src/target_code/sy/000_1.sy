@@ -1,13 +1,11 @@
-int gc(int a){
-    return a + 1;
-}
 int main(){
 
     const int a = 1;
-    const int b = 2;
-    int g = a + gc(b);
-    int h = a + gc(b);
+    int b = 2;
+    if(a > 1){
+        b = b + 1;
+    }
      
     
-    return g;
+    return b;
 }

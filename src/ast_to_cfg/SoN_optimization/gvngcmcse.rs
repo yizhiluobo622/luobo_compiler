@@ -748,8 +748,10 @@ impl CombinedOptimizer {
                     NodeData::MemberAccess { object, .. } => {
                         if *object == Some(old_id) { *object = Some(new_id); }
                     }
-                    NodeData::If { condition } => {
+                    NodeData::If { condition, true_branch, false_branch } => {
                         if *condition == Some(old_id) { *condition = Some(new_id); }
+                        if *true_branch == Some(old_id) { *true_branch = Some(new_id); }
+                        if *false_branch == Some(old_id) { *false_branch = Some(new_id); }
                     }
                     NodeData::Loop { entry, back } => {
                         if *entry == Some(old_id) { *entry = Some(new_id); }

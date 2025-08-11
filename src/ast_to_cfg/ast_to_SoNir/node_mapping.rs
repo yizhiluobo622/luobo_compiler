@@ -217,7 +217,7 @@ impl NodeMapping {
     
     /// 创建 Phi 节点
     pub fn create_phi_node(label: String, typ: Type, inputs: Vec<Option<usize>>) -> SonNodeKind {
-        let data = NodeData::Phi { label, typ, inputs };
+        let data = NodeData::Phi { label, typ, inputs, region: None };
         SonNodeKind::with_data(OpCode::Phi, data)
     }
     

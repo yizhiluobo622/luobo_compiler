@@ -139,6 +139,27 @@ impl<'a> SonIrBuilder<'a> {
                 // 创建Start节点
                 let start_id = self.create_start_node();
                 
+                // 自动创建投影节点：$ctrl, arg
+                let ctrl_proj_id = self.create_proj_node(0, ScopeManager::CTRL.to_string());
+                let arg_proj_id = self.create_proj_node(1, ScopeManager::ARG0.to_string());
+                
+                // 将投影节点连接到Start节点
+                self.son_ir.add_edge(SonEdge::new(start_id, ctrl_proj_id, EdgeType::Data));
+                self.son_ir.add_edge(SonEdge::new(start_id, arg_proj_id, EdgeType::Data));
+                
+                // 在作用域中定义 $ctrl 和 arg
+                if let Err(e) = self.scope_manager.set_ctrl(ctrl_proj_id) {
+                    if self.strict_type_checking {
+                        self.type_errors.push(format!("设置$ctrl失败: {}", e));
+                    }
+                }
+                
+                if let Err(e) = self.scope_manager.set_arg(arg_proj_id) {
+                    if self.strict_type_checking {
+                        self.type_errors.push(format!("设置arg失败: {}", e));
+                    }
+                }
+                
                 // 创建参数节点
                 let mut param_nodes = Vec::new();
                 for param in parameters {
@@ -230,124 +251,123 @@ impl<'a> SonIrBuilder<'a> {
             Statement::Compound { statements } => {
                 if statements.is_empty() {
                     // 空复合语句，创建Region节点
-                    let region_id = self.create_region_node();
+                    let region_id = self.create_region_node(vec![]);
                     if let Some(control) = self.current_control_flow {
                         self.son_ir.add_edge(SonEdge::new(control, region_id, EdgeType::Control));
-                        self.current_control_flow = Some(region_id);
                     }
-                    return Ok(region_id);
-                }
-                
-                // 进入复合语句作用域
-                let scope_id = self.scope_manager.enter_scope("compound");
-                
-                let mut last_result = None;
-                let mut previous_control = self.current_control_flow;
-                
-                for (i, stmt) in statements.iter().enumerate() {
-                    let stmt_result = match &stmt.kind {
-                        AstKind::Statement(stmt_kind) => {
-                            self.build_statement(stmt_kind)?
-                        }
-                        AstKind::VariableDeclaration { variable_name, variable_type, initial_value, is_const } => {
-                            // 使用 ScopeManager 声明变量
-                            let var_id = match self.scope_manager.declare_variable(
-                                variable_name,
-                                variable_type.clone(),
-                                None, // 先声明，稍后设置初始值
-                                self.son_ir
-                            ) {
-                                Ok(node_id) => node_id,
-                                Err(e) => {
-                                    // 如果 ScopeManager 失败，降级到原来的实现
-                                    if self.strict_type_checking {
-                                        self.type_errors.push(format!("变量声明失败: {}", e));
-                                    }
-                                    self.create_local_node(variable_name.clone(), variable_type.clone())
-                                }
-                            };
-                            
-                            // 将变量节点连接到当前作用域的Scope节点
-                            if let Some(scope_id) = self.scope_manager.current_scope_id() {
-                                if let Some(&scope_node_id) = self.scope_manager.get_scope_node_id(scope_id) {
-                                    self.son_ir.add_edge(SonEdge::new(var_id, scope_node_id, EdgeType::Data));
-                                }
+                    Ok(region_id)
+                } else {
+                    // 进入复合语句作用域
+                    let scope_id = self.scope_manager.enter_scope("compound");
+                    
+                    let mut last_result = None;
+                    let mut previous_control = self.current_control_flow;
+                    
+                    for (i, stmt) in statements.iter().enumerate() {
+                        let stmt_result = match &stmt.kind {
+                            AstKind::Statement(stmt_kind) => {
+                                self.build_statement(stmt_kind)?
                             }
-                            
-                            // 将变量添加到变量映射（保持向后兼容）
-                            self.variable_map.insert(variable_name.clone(), var_id);
-                            self.variable_declared.insert(variable_name.clone(), true);
-                            
-                            // 如果有初始值，构建表达式并创建Store节点
-                            if let Some(init_expr) = initial_value {
-                                if let AstKind::Expression(expr_kind) = &init_expr.kind {
-                                    let init_result = self.build_expression(expr_kind)?;
-                                    
-                                    // 创建Store节点来实际存储初始值
-                                    let store_id = self.create_store_node(
-                                        variable_name.clone(),
-                                        0, // 默认别名
-                                        variable_type.clone(),
-                                        None, // mem
-                                        Some(var_id), // ptr - 指向变量节点
-                                        None, // offset
-                                        Some(init_result), // value - 初始值
-                                        true // init - 标记为初始化
-                                    );
-                                    
-                                    // 添加数据流边：从初始值到Store（Store节点只有输入边，没有输出数据边）
-                                    self.son_ir.add_edge(SonEdge::new(init_result, store_id, EdgeType::Data));
-                                    // Store节点不应该有输出数据边，因为它是副作用操作
-                                    
-                                    // 更新 ScopeManager 中的变量值
-                                    if let Err(e) = self.scope_manager.update_variable(
-                                        variable_name,
-                                        store_id,
-                                        self.son_ir
-                                    ) {
+                            AstKind::VariableDeclaration { variable_name, variable_type, initial_value, is_const } => {
+                                // 使用 ScopeManager 声明变量
+                                let var_id = match self.scope_manager.declare_variable(
+                                    variable_name,
+                                    variable_type.clone(),
+                                    None, // 先声明，稍后设置初始值
+                                    self.son_ir
+                                ) {
+                                    Ok(node_id) => node_id,
+                                    Err(e) => {
+                                        // 如果 ScopeManager 失败，降级到原来的实现
                                         if self.strict_type_checking {
-                                            self.type_errors.push(format!("变量更新失败: {}", e));
+                                            self.type_errors.push(format!("变量声明失败: {}", e));
                                         }
+                                        self.create_local_node(variable_name.clone(), variable_type.clone())
                                     }
-                                    
-                                    // Store节点的控制流连接由复合语句处理逻辑统一管理
-                                    // 这里不需要手动添加控制边
-                                    
-                                    // 返回Store节点ID，这样控制流会经过初始化
-                                    store_id
+                                };
+                                
+                                // 将变量节点连接到当前作用域的Scope节点
+                                if let Some(scope_id) = self.scope_manager.current_scope_id() {
+                                    if let Some(&scope_node_id) = self.scope_manager.get_scope_node_id(scope_id) {
+                                        self.son_ir.add_edge(SonEdge::new(var_id, scope_node_id, EdgeType::Data));
+                                    }
+                                }
+                                
+                                // 将变量添加到变量映射（保持向后兼容）
+                                self.variable_map.insert(variable_name.clone(), var_id);
+                                self.variable_declared.insert(variable_name.clone(), true);
+                                
+                                // 如果有初始值，构建表达式并创建Store节点
+                                if let Some(init_expr) = initial_value {
+                                    if let AstKind::Expression(expr_kind) = &init_expr.kind {
+                                        let init_result = self.build_expression(expr_kind)?;
+                                        
+                                        // 创建Store节点来实际存储初始值
+                                        let store_id = self.create_store_node(
+                                            variable_name.clone(),
+                                            0, // 默认别名
+                                            variable_type.clone(),
+                                            None, // mem
+                                            Some(var_id), // ptr - 指向变量节点
+                                            None, // offset
+                                            Some(init_result), // value - 初始值
+                                            true // init - 标记为初始化
+                                        );
+                                        
+                                        // 添加数据流边：从初始值到Store（Store节点只有输入边，没有输出数据边）
+                                        self.son_ir.add_edge(SonEdge::new(init_result, store_id, EdgeType::Data));
+                                        // Store节点不应该有输出数据边，因为它是副作用操作
+                                        
+                                        // 更新 ScopeManager 中的变量值
+                                        if let Err(e) = self.scope_manager.update_variable(
+                                            variable_name,
+                                            store_id,
+                                            self.son_ir
+                                        ) {
+                                            if self.strict_type_checking {
+                                                self.type_errors.push(format!("变量更新失败: {}", e));
+                                            }
+                                        }
+                                        
+                                        // Store节点的控制流连接由复合语句处理逻辑统一管理
+                                        // 这里不需要手动添加控制边
+                                        
+                                        // 返回Store节点ID，这样控制流会经过初始化
+                                        store_id
+                                    } else {
+                                        var_id
+                                    }
                                 } else {
                                     var_id
                                 }
-                            } else {
-                                var_id
                             }
+                            _ => {
+                                return Err(ConversionError::UnsupportedNodeType(
+                                    format!("复合语句中的元素必须是语句或变量声明，得到: {:?}", stmt.kind)
+                                ));
+                            }
+                        };
+                        
+                        // 连接控制流：从上一个控制流节点到当前语句
+                        if let Some(control) = previous_control {
+                            self.son_ir.add_edge(SonEdge::new(control, stmt_result, EdgeType::Control));
                         }
-                        _ => {
-                            return Err(ConversionError::UnsupportedNodeType(
-                                format!("复合语句中的元素必须是语句或变量声明，得到: {:?}", stmt.kind)
-                            ));
-                        }
-                    };
-                    
-                    // 连接控制流：从上一个控制流节点到当前语句
-                    if let Some(control) = previous_control {
-                        self.son_ir.add_edge(SonEdge::new(control, stmt_result, EdgeType::Control));
+                        
+                        // 更新控制流状态
+                        previous_control = Some(stmt_result);
+                        last_result = Some(stmt_result);
                     }
                     
-                    // 更新控制流状态
-                    previous_control = Some(stmt_result);
-                    last_result = Some(stmt_result);
+                    // 更新当前控制流为最后一个语句的结果
+                    if let Some(result) = last_result {
+                        self.current_control_flow = Some(result);
+                    }
+                    
+                    // 退出复合语句作用域
+                    self.scope_manager.exit_scope(self.son_ir);
+                    
+                    Ok(last_result.unwrap_or_else(|| self.create_region_node(vec![])))
                 }
-                
-                // 更新当前控制流为最后一个语句的结果
-                if let Some(result) = last_result {
-                    self.current_control_flow = Some(result);
-                }
-                
-                // 退出复合语句作用域
-                self.scope_manager.exit_scope(self.son_ir);
-                
-                Ok(last_result.unwrap_or_else(|| self.create_region_node()))
             }
             
             Statement::ExpressionStatement { expression } => {
@@ -389,48 +409,104 @@ impl<'a> SonIrBuilder<'a> {
             }
             
             Statement::If { condition, then_branch, else_branch } => {
-                let condition_id = if let AstKind::Expression(expr_kind) = &condition.kind {
-                    self.build_expression(expr_kind)?
+                // 解析条件表达式
+                let condition_id = if let AstKind::Expression(expr) = &condition.kind {
+                    self.build_expression(expr)?
                 } else {
                     return Err(ConversionError::UnsupportedNodeType("if条件必须是表达式".to_string()));
                 };
                 
                 // 创建If节点
-                let if_id = self.create_if_node(Some(condition_id));
+                let if_node_id = self.create_if_node(Some(condition_id));
                 
-                // 构建then分支
-                let then_id = if let AstKind::Statement(stmt_kind) = &then_branch.kind {
-                    self.build_statement(stmt_kind)?
-                } else {
-                    return Err(ConversionError::UnsupportedNodeType("then分支必须是语句".to_string()));
-                };
+                // 连接条件表达式到If节点
+                self.son_ir.add_edge(SonEdge::new(condition_id, if_node_id, EdgeType::Data));
                 
-                // 构建else分支（如果存在）
-                let else_id = if let Some(else_stmt) = else_branch {
-                    if let AstKind::Statement(stmt_kind) = &else_stmt.kind {
-                        self.build_statement(stmt_kind)?
-                    } else {
-                        return Err(ConversionError::UnsupportedNodeType("else分支必须是语句".to_string()));
-                    }
-                } else {
-                    self.create_region_node()
-                };
+                // 创建true和false分支的投影节点
+                let true_proj_id = self.create_proj_node(0, "ifT".to_string());
+                let false_proj_id = self.create_proj_node(1, "ifF".to_string());
                 
-                // 创建Region节点
-                let merge_id = self.create_region_node();
+                // 连接If节点到投影节点
+                self.son_ir.add_edge(SonEdge::new(if_node_id, true_proj_id, EdgeType::Control));
+                self.son_ir.add_edge(SonEdge::new(if_node_id, false_proj_id, EdgeType::Control));
                 
-                // 连接控制流
+                // 确保If节点有正确的控制流输入
                 if let Some(control) = self.current_control_flow {
-                    self.son_ir.add_edge(SonEdge::new(control, if_id, EdgeType::Control));
+                    self.son_ir.add_edge(SonEdge::new(control, if_node_id, EdgeType::Control));
                 }
                 
-                self.son_ir.add_edge(SonEdge::new(if_id, then_id, EdgeType::Control));
-                self.son_ir.add_edge(SonEdge::new(if_id, else_id, EdgeType::Control));
-                self.son_ir.add_edge(SonEdge::new(then_id, merge_id, EdgeType::Control));
-                self.son_ir.add_edge(SonEdge::new(else_id, merge_id, EdgeType::Control));
+                // 复制当前作用域用于true分支
+                let true_scope_id = self.scope_manager.duplicate_current_scope(self.son_ir)
+                    .map_err(|e| ConversionError::InternalError(format!("复制作用域失败: {}", e)))?;
                 
-                self.current_control_flow = Some(merge_id);
-                Ok(merge_id)
+                println!("[DEBUG] 复制作用域成功，ID: {}", true_scope_id);
+                self.scope_manager.debug_print_scopes();
+                
+                // 设置true分支的控制流
+                self.current_control_flow = Some(true_proj_id);
+                
+                // 解析true分支
+                let true_result = if let AstKind::Statement(stmt) = &then_branch.kind {
+                    self.build_statement(stmt)?
+                } else {
+                    return Err(ConversionError::UnsupportedNodeType("if的then分支必须是语句".to_string()));
+                };
+                
+                // 保存true分支的最终作用域ID
+                let true_scope_final_id = self.scope_manager.current_scope_id().unwrap();
+                println!("[DEBUG] true分支完成，最终作用域ID: {}", true_scope_final_id);
+                self.scope_manager.debug_print_scopes();
+                
+                // 恢复原始作用域（但不删除true分支的作用域）
+                let _ = self.scope_manager.exit_scope(self.son_ir);
+                println!("[DEBUG] 退出true分支作用域，当前作用域ID: {:?}", self.scope_manager.current_scope_id());
+                self.scope_manager.debug_print_scopes();
+                
+                // 设置false分支的控制流
+                self.current_control_flow = Some(false_proj_id);
+                
+                // 解析false分支（如果存在）
+                let false_result = if let Some(else_stmt) = else_branch {
+                    if let AstKind::Statement(stmt) = &else_stmt.kind {
+                        self.build_statement(stmt)?
+                    } else {
+                        return Err(ConversionError::UnsupportedNodeType("if的else分支必须是语句".to_string()));
+                    }
+                } else {
+                    // 没有else分支，创建一个空的Region节点作为false分支结果
+                    let false_region = self.create_region_node(vec![Some(false_proj_id)]);
+                    // 连接false分支投影到Region节点
+                    self.son_ir.add_edge(SonEdge::new(false_proj_id, false_region, EdgeType::Control));
+                                    // 确保false分支的Region节点有正确的控制流输入
+                // 注意：这里不需要额外的控制流输入，因为false_proj_id已经通过if_node_id连接了
+                    false_region
+                };
+                
+                // 创建Region节点来合并两个分支
+                let region_id = self.create_region_node(vec![Some(true_result), Some(false_result)]);
+                
+                // 连接分支结果到Region节点
+                self.son_ir.add_edge(SonEdge::new(true_result, region_id, EdgeType::Control));
+                self.son_ir.add_edge(SonEdge::new(false_result, region_id, EdgeType::Control));
+                
+                // 合并作用域 - 使用保存的作用域ID
+                println!("[DEBUG] 准备合并作用域: true_scope_final_id={}, current_scope_id={:?}", 
+                        true_scope_final_id, self.scope_manager.current_scope_id());
+                self.scope_manager.debug_print_scopes();
+                
+                let merged_scope_id = self.scope_manager.merge_scopes(
+                    true_scope_final_id, 
+                    self.scope_manager.current_scope_id().unwrap(), 
+                    self.son_ir
+                ).map_err(|e| ConversionError::InternalError(format!("合并作用域失败: {}", e)))?;
+                
+                println!("[DEBUG] 作用域合并成功，新作用域ID: {}", merged_scope_id);
+                self.scope_manager.debug_print_scopes();
+                
+                // 设置合并后的控制流
+                self.current_control_flow = Some(region_id);
+                
+                Ok(region_id)
             }
             
             Statement::While { condition, body } => {
@@ -452,11 +528,11 @@ impl<'a> SonIrBuilder<'a> {
                 };
                 
                 // 创建Region节点
-                let merge_id = self.create_region_node();
+                let merge_id = self.create_region_node(vec![]);
                 
                 // 连接控制流
                 if let Some(control) = self.current_control_flow {
-                    self.son_ir.add_edge(SonEdge::new(control, loop_id, EdgeType::Control));
+                    self.son_ir.add_edge(SonEdge::new(control, merge_id, EdgeType::Control));
                 }
                 
                 self.son_ir.add_edge(SonEdge::new(loop_id, condition_id, EdgeType::Control));
@@ -518,11 +594,9 @@ impl<'a> SonIrBuilder<'a> {
                 }
                 
                 // 创建Region节点
-                let merge_id = self.create_region_node();
-                
-                // 连接控制流
+                let merge_id = self.create_region_node(vec![]);
                 if let Some(control) = self.current_control_flow {
-                    self.son_ir.add_edge(SonEdge::new(control, loop_id, EdgeType::Control));
+                    self.son_ir.add_edge(SonEdge::new(control, merge_id, EdgeType::Control));
                 }
                 
                 self.son_ir.add_edge(SonEdge::new(loop_id, condition_id, EdgeType::Control));
@@ -556,7 +630,7 @@ impl<'a> SonIrBuilder<'a> {
             }
             
             Statement::Empty => {
-                let region_id = self.create_region_node();
+                let region_id = self.create_region_node(vec![]);
                 
                 // 更新控制流
                 if let Some(control) = self.current_control_flow {
@@ -579,7 +653,27 @@ impl<'a> SonIrBuilder<'a> {
             Expression::Identifier { name } => {
                 // 查找变量
                 if let Some(&node_id) = self.variable_map.get(name) {
-                    Ok(node_id)
+                    // 检查节点类型，如果是Store节点，需要找到对应的Local节点
+                    let actual_var_node = if let Some(node) = self.son_ir.get_node(node_id) {
+                        if matches!(node.kind.opcode, OpCode::Store) {
+                            // 如果是Store节点，需要找到对应的Local节点
+                            // 这里我们需要从ScopeManager中获取Local节点ID
+                            // 暂时使用一个简单的解决方案：创建新的Local节点
+                            let inferred_type = self.infer_variable_type_from_context(name);
+                            let local_id = self.create_local_node(name.clone(), inferred_type);
+                            // 更新变量映射，指向Local节点而不是Store节点
+                            self.variable_map.insert(name.clone(), local_id);
+                            local_id
+                        } else {
+                            node_id
+                        }
+                    } else {
+                        node_id
+                    };
+                    
+                    // 创建Load节点来读取变量的值
+                    let load_id = self.create_unary_op_node(OpCode::Load, Some(actual_var_node));
+                    Ok(load_id)
                 } else {
                     // 检查变量是否已声明
                     if !self.variable_declared.get(name).copied().unwrap_or(false) {
@@ -590,7 +684,10 @@ impl<'a> SonIrBuilder<'a> {
                         let local_id = self.create_local_node(name.clone(), inferred_type);
                         self.variable_map.insert(name.clone(), local_id);
                         self.variable_declared.insert(name.clone(), true);
-                        Ok(local_id)
+                        
+                        // 创建Load节点来读取变量的值
+                        let load_id = self.create_unary_op_node(OpCode::Load, Some(local_id));
+                        Ok(load_id)
                     } else {
                         // 变量已声明但未找到节点，这是内部错误
                         Err(ConversionError::InternalError(
@@ -612,29 +709,63 @@ impl<'a> SonIrBuilder<'a> {
                     return Err(ConversionError::UnsupportedNodeType("二元运算右操作数必须是表达式".to_string()));
                 };
                 
-                let opcode = match operator {
-                    BinaryOperator::Add => OpCode::Add,
-                    BinaryOperator::Subtract => OpCode::Subtract,
-                    BinaryOperator::Multiply => OpCode::Multiply,
-                    BinaryOperator::Divide => OpCode::Divide,
-                    BinaryOperator::Modulo => OpCode::Modulo,
-                    BinaryOperator::Equal => OpCode::Equal,
-                    BinaryOperator::NotEqual => OpCode::NotEqual,
-                    BinaryOperator::LessThan => OpCode::LessThan,
-                    BinaryOperator::LessEqual => OpCode::LessEqual,
-                    BinaryOperator::GreaterThan => OpCode::GreaterThan,
-                    BinaryOperator::GreaterEqual => OpCode::GreaterEqual,
-                    BinaryOperator::LogicalAnd => OpCode::LogicalAnd,
-                    BinaryOperator::LogicalOr => OpCode::LogicalOr,
-                    BinaryOperator::Assign => OpCode::Store,
-                    BinaryOperator::AddAssign => OpCode::Add,
-                    BinaryOperator::SubtractAssign => OpCode::Subtract,
-                    BinaryOperator::MultiplyAssign => OpCode::Multiply,
-                    BinaryOperator::DivideAssign => OpCode::Divide,
-                    BinaryOperator::ModuloAssign => OpCode::Modulo,
-                };
+                // 检查是否为比较运算，如果是则创建Bool节点
+                let is_comparison = matches!(operator, 
+                    BinaryOperator::Equal | BinaryOperator::NotEqual | 
+                    BinaryOperator::LessThan | BinaryOperator::LessEqual |
+                    BinaryOperator::GreaterThan | BinaryOperator::GreaterEqual
+                );
                 
-                Ok(self.create_binary_op_node(opcode, Some(left_id), Some(right_id)))
+                if is_comparison {
+                    // 创建Bool节点
+                    let bool_op = match operator {
+                        BinaryOperator::Equal => crate::ast_to_cfg::ast_to_SoNir::son_ir::BoolOp::EQ,
+                        BinaryOperator::NotEqual => crate::ast_to_cfg::ast_to_SoNir::son_ir::BoolOp::NE,
+                        BinaryOperator::LessThan => crate::ast_to_cfg::ast_to_SoNir::son_ir::BoolOp::LT,
+                        BinaryOperator::LessEqual => crate::ast_to_cfg::ast_to_SoNir::son_ir::BoolOp::LE,
+                        BinaryOperator::GreaterThan => crate::ast_to_cfg::ast_to_SoNir::son_ir::BoolOp::GT,
+                        BinaryOperator::GreaterEqual => crate::ast_to_cfg::ast_to_SoNir::son_ir::BoolOp::GE,
+                        _ => unreachable!(),
+                    };
+                    
+                    let kind = crate::ast_to_cfg::ast_to_SoNir::son_ir::SonNodeKind::with_data(
+                        crate::ast_to_cfg::ast_to_SoNir::son_ir::OpCode::Bool,
+                        crate::ast_to_cfg::ast_to_SoNir::son_ir::NodeData::Bool {
+                            left: Some(left_id),
+                            right: Some(right_id),
+                            op: bool_op,
+                        }
+                    );
+                    
+                    let node = crate::ast_to_cfg::ast_to_SoNir::son_ir::SonNode::new(0, kind);
+                    let node_id = self.son_ir.add_node(node);
+                    
+                    // 添加数据边
+                    self.son_ir.add_edge(crate::ast_to_cfg::ast_to_SoNir::son_ir::SonEdge::new(left_id, node_id, crate::ast_to_cfg::ast_to_SoNir::son_ir::EdgeType::Data));
+                    self.son_ir.add_edge(crate::ast_to_cfg::ast_to_SoNir::son_ir::SonEdge::new(right_id, node_id, crate::ast_to_cfg::ast_to_SoNir::son_ir::EdgeType::Data));
+                    
+                    Ok(node_id)
+                } else {
+                    // 其他运算使用原来的逻辑
+                    let opcode = match operator {
+                        BinaryOperator::Add => OpCode::Add,
+                        BinaryOperator::Subtract => OpCode::Subtract,
+                        BinaryOperator::Multiply => OpCode::Multiply,
+                        BinaryOperator::Divide => OpCode::Divide,
+                        BinaryOperator::Modulo => OpCode::Modulo,
+                        BinaryOperator::LogicalAnd => OpCode::LogicalAnd,
+                        BinaryOperator::LogicalOr => OpCode::LogicalOr,
+                        BinaryOperator::Assign => OpCode::Store,
+                        BinaryOperator::AddAssign => OpCode::Add,
+                        BinaryOperator::SubtractAssign => OpCode::Subtract,
+                        BinaryOperator::MultiplyAssign => OpCode::Multiply,
+                        BinaryOperator::DivideAssign => OpCode::Divide,
+                        BinaryOperator::ModuloAssign => OpCode::Modulo,
+                        _ => return Err(ConversionError::UnsupportedNodeType(format!("不支持的二元运算符: {:?}", operator))),
+                    };
+                    
+                    Ok(self.create_binary_op_node(opcode, Some(left_id), Some(right_id)))
+                }
             }
             
             Expression::UnaryOperation { operator, operand } => {
@@ -778,9 +909,10 @@ impl<'a> SonIrBuilder<'a> {
                     Ok(default_value)
                 } else {
                     // 对于非空初始化列表，我们创建一个Region节点来收集所有元素
-                    let region_id = self.create_region_node();
+                    let region_id = self.create_region_node(vec![]);
                     
                     // 处理每个初始化元素，只处理实际存在的元素
+                    let mut has_elements = false;
                     for element in elements {
                         // 跳过空的初始化元素（如 {} 或 7 这样的不完整初始化）
                         if let AstKind::Expression(Expression::InitializerList { elements: nested_elements }) = &element.kind {
@@ -804,6 +936,14 @@ impl<'a> SonIrBuilder<'a> {
                         
                         // 添加数据流边：从元素到Region
                         self.son_ir.add_edge(SonEdge::new(element_id, region_id, EdgeType::Data));
+                        has_elements = true;
+                    }
+                    
+                    // 如果没有有效的元素，连接到当前控制流
+                    if !has_elements {
+                        if let Some(control) = self.current_control_flow {
+                            self.son_ir.add_edge(SonEdge::new(control, region_id, EdgeType::Control));
+                        }
                     }
                     
                     Ok(region_id)
@@ -997,24 +1137,50 @@ impl<'a> SonIrBuilder<'a> {
 
     /// 创建Start节点
     fn create_start_node(&mut self) -> SonNodeId {
+        // 默认输出类型：[ctrl, arg]
+        let default_outputs = vec![Type::IntType, Type::IntType];
+        
         let kind = SonNodeKind::with_data(
             OpCode::Start,
-            NodeData::Start { args: Vec::new() }
+            NodeData::Start { 
+                outputs: default_outputs.clone(),
+                ctrl_type: Type::IntType,
+                arg_type: Type::IntType,
+            }
         );
-        // 让 SonIr 自动分配节点 ID，传入 0 作为占位符
+        
         let node = SonNode::new(0, kind);
         let node_id = self.son_ir.add_node(node);
 
         node_id
     }
 
-    /// 创建常量节点
+    /// 创建常量节点（带去重）
     fn create_constant_node(&mut self, value: ConstantValue, typ: Type) -> SonNodeId {
+        // 检查是否已经存在相同的常量节点
+        let key = format!("{:?}_{:?}", value, typ);
+        if let Some(&existing_id) = self.temp_node_cache.get(&key) {
+            // 检查节点是否仍然存在且类型匹配
+            if let Some(node) = self.son_ir.get_node(existing_id) {
+                if let NodeData::Constant { value: existing_value, typ: existing_type } = &node.kind.data {
+                    if existing_value == &value && existing_type == &typ {
+                        return existing_id;
+                    }
+                }
+            }
+        }
+        
+        // 创建新的常量节点
         let kind = SonNodeKind::with_data(
             OpCode::Constant,
-            NodeData::Constant { value, typ }
+            NodeData::Constant { value: value.clone(), typ: typ.clone() }
         );
-        self.son_ir.add_node(SonNode::new(0, kind))
+        let node_id = self.son_ir.add_node(SonNode::new(0, kind));
+        
+        // 缓存常量节点以便复用
+        self.temp_node_cache.insert(key, node_id);
+        
+        node_id
     }
 
     /// 创建参数节点
@@ -1057,6 +1223,11 @@ impl<'a> SonIrBuilder<'a> {
 
     /// 创建一元运算节点
     fn create_unary_op_node(&mut self, opcode: OpCode, operand: Option<SonNodeId>) -> SonNodeId {
+        // 对于Load操作，使用专门的创建逻辑
+        if opcode == OpCode::Load {
+            return self.create_load_node(operand);
+        }
+        
         let input_nodes = operand.map_or(Vec::new(), |id| vec![id]);
         
         self.create_node_with_data_edges(
@@ -1064,6 +1235,29 @@ impl<'a> SonIrBuilder<'a> {
             NodeData::UnaryOp { operand },
             input_nodes
         )
+    }
+    
+    /// 创建Load节点（专门处理变量读取）
+    fn create_load_node(&mut self, variable_node: Option<SonNodeId>) -> SonNodeId {
+        let kind = SonNodeKind::with_data(
+            OpCode::Load,
+            NodeData::Load {
+                name: "".to_string(), // 变量名，这里不需要
+                alias: 0,
+                declared_type: Type::IntType, // 默认类型，实际应该从变量节点获取
+                mem: None,
+                ptr: variable_node,
+                offset: None,
+            }
+        );
+        let node_id = self.son_ir.add_node(SonNode::new(0, kind));
+        
+        // Load节点需要连接到变量节点，表示从该变量读取值
+        if let Some(var_id) = variable_node {
+            self.son_ir.add_edge(SonEdge::new(var_id, node_id, EdgeType::Data));
+        }
+        
+        node_id
     }
 
     /// 创建函数调用节点
@@ -1125,41 +1319,71 @@ impl<'a> SonIrBuilder<'a> {
 
     /// 创建If节点
     fn create_if_node(&mut self, condition: Option<SonNodeId>) -> SonNodeId {
-        let input_nodes = condition.map_or(Vec::new(), |id| vec![id]);
-        
-        self.create_node_with_data_edges(
+        let kind = SonNodeKind::with_data(
             OpCode::If,
-            NodeData::If { condition },
-            input_nodes
-        )
+            NodeData::If {
+                condition,
+                true_branch: None,
+                false_branch: None,
+            }
+        );
+        let node = SonNode::new(0, kind);
+        let node_id = self.son_ir.add_node(node);
+        node_id
+    }
+
+    /// 创建Phi节点
+    fn create_phi_node(&mut self, label: String, typ: Type, inputs: Vec<Option<SonNodeId>>, region: Option<SonNodeId>) -> SonNodeId {
+        let kind = SonNodeKind::with_data(
+            OpCode::Phi,
+            NodeData::Phi {
+                label,
+                typ,
+                inputs,
+                region,
+            }
+        );
+        let node = SonNode::new(0, kind);
+        let node_id = self.son_ir.add_node(node);
+        node_id
+    }
+
+    /// 创建Region节点
+    fn create_region_node(&mut self, inputs: Vec<Option<SonNodeId>>) -> SonNodeId {
+        // 添加调试信息
+        let is_empty = inputs.is_empty();
+        
+        let kind = SonNodeKind::with_data(
+            OpCode::Region,
+            NodeData::Region { inputs }
+        );
+        let node = SonNode::new(0, kind);
+        let node_id = self.son_ir.add_node(node);
+        
+        // 添加调试信息
+        if is_empty {
+            println!("[DEBUG] 创建空Region节点: ID={}, 当前控制流: {:?}", 
+                    node_id, self.current_control_flow);
+        }
+        
+        node_id
+    }
+
+    /// 创建Stop节点
+    fn create_stop_node(&mut self, return_nodes: Vec<SonNodeId>) -> SonNodeId {
+        let kind = SonNodeKind::with_data(
+            OpCode::Stop,
+            NodeData::Stop { return_nodes }
+        );
+        let node = SonNode::new(0, kind);
+        let node_id = self.son_ir.add_node(node);
+        node_id
     }
 
     /// 创建Loop节点
     fn create_loop_node(&mut self) -> SonNodeId {
         let kind = SonNodeKind::new(OpCode::Loop);
         self.son_ir.add_node(SonNode::new(0, kind))
-    }
-
-    /// 创建Region节点
-    fn create_region_node(&mut self) -> SonNodeId {
-        let kind = SonNodeKind::new(OpCode::Region);
-        self.son_ir.add_node(SonNode::new(0, kind))
-    }
-
-
-    
-    fn create_phi_node(&mut self, label: String, typ: Type, inputs: Vec<Option<SonNodeId>>) -> SonNodeId {
-        let kind = SonNodeKind::with_data(OpCode::Phi, NodeData::Phi { label, typ, inputs: inputs.clone() });
-        let phi_id = self.son_ir.add_node(SonNode::new(0, kind));
-        
-        // 添加数据依赖边
-        for input in &inputs {
-            if let Some(input_id) = input {
-                self.son_ir.add_edge(SonEdge::new(*input_id, phi_id, EdgeType::Data));
-            }
-        }
-        
-        phi_id
     }
 
     /// 创建Break节点
@@ -1171,6 +1395,24 @@ impl<'a> SonIrBuilder<'a> {
     /// 创建Continue节点
     fn create_continue_node(&mut self) -> SonNodeId {
         let kind = SonNodeKind::new(OpCode::Continue);
+        self.son_ir.add_node(SonNode::new(0, kind))
+    }
+
+    /// 创建投影节点 (Proj)
+    fn create_proj_node(&mut self, index: usize, label: String) -> SonNodeId {
+        let kind = SonNodeKind::with_data(
+            OpCode::Proj,
+            NodeData::Proj { index, label }
+        );
+        self.son_ir.add_node(SonNode::new(0, kind))
+    }
+
+    /// 创建控制投影节点 (CProj)
+    fn create_cproj_node(&mut self, index: usize, label: String) -> SonNodeId {
+        let kind = SonNodeKind::with_data(
+            OpCode::CProj,
+            NodeData::CProj { index, label }
+        );
         self.son_ir.add_node(SonNode::new(0, kind))
     }
 
@@ -1292,9 +1534,11 @@ impl<'a> SonIrBuilder<'a> {
                 let is_local_node = matches!(node_kind.opcode, OpCode::Local);
                 let is_scope_node = matches!(node_kind.opcode, OpCode::Scope);
                 let is_store_node = matches!(node_kind.opcode, OpCode::Store);
+                let is_region_node = matches!(node_kind.opcode, OpCode::Region);
+                let is_bool_node = matches!(node_kind.opcode, OpCode::Bool);
                 
                 // 这些节点类型不需要输入边
-                let needs_inputs = !is_parameter_node && !is_constant_node && !is_start_node && !is_local_node && !is_scope_node && !is_store_node;
+                let needs_inputs = !is_parameter_node && !is_constant_node && !is_start_node && !is_local_node && !is_scope_node && !is_store_node && !is_region_node && !is_bool_node;
                 
                 if needs_inputs && node.inputs.is_empty() && node.control_inputs.is_empty() {
                     let error_msg = format!("节点 {} ({:?}) 没有输入边，可能不可达", node_id, node_kind.opcode);

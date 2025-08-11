@@ -82,7 +82,11 @@ impl ConstantPropagation {
             }
         }
         
-        self.stats.iterations = 3; // 三轮优化
+        // 第四轮：常量合并和死代码消除
+        self.merge_duplicate_constants(son_ir);
+        self.remove_dead_code(son_ir);
+        
+        self.stats.iterations = 4; // 四轮优化
     }
     
     /// 识别变量值
@@ -728,6 +732,16 @@ impl ConstantPropagation {
                             updated = true;
                         }
                     }
+                    NodeData::Bool { left, right, .. } => {
+                        if *left == Some(old_id) {
+                            *left = Some(new_id);
+                            updated = true;
+                        }
+                        if *right == Some(old_id) {
+                            *right = Some(new_id);
+                            updated = true;
+                        }
+                    }
                     NodeData::UnaryOp { operand } => {
                         if *operand == Some(old_id) {
                             *operand = Some(new_id);
@@ -792,9 +806,17 @@ impl ConstantPropagation {
                             updated = true;
                         }
                     }
-                    NodeData::If { condition } => {
+                    NodeData::If { condition, true_branch, false_branch } => {
                         if *condition == Some(old_id) {
                             *condition = Some(new_id);
+                            updated = true;
+                        }
+                        if *true_branch == Some(old_id) {
+                            *true_branch = Some(new_id);
+                            updated = true;
+                        }
+                        if *false_branch == Some(old_id) {
+                            *false_branch = Some(new_id);
                             updated = true;
                         }
                     }
@@ -822,6 +844,14 @@ impl ConstantPropagation {
                     NodeData::Constant { .. } | NodeData::Local { .. } | NodeData::Parameter { .. } | 
                     NodeData::Start { .. } | NodeData::Proj { .. } | NodeData::CProj { .. } | NodeData::None => {
                         // 这些节点不引用其他节点ID
+                    }
+                    NodeData::Stop { return_nodes } => {
+                        for return_node in return_nodes {
+                            if *return_node == old_id {
+                                *return_node = new_id;
+                                updated = true;
+                            }
+                        }
                     }
                 }
                 
@@ -1108,6 +1138,145 @@ impl ConstantPropagation {
             NodeData::Parameter { name, .. } => Some(name.clone()),
             _ => None
         }
+    }
+
+    /// 常量合并：合并具有相同值的常量节点
+    fn merge_duplicate_constants(&mut self, son_ir: &mut SonIr) {
+        let mut constant_nodes: HashMap<String, SonNodeId> = HashMap::new();
+        let mut nodes_to_remove: Vec<SonNodeId> = Vec::new();
+        let mut edges_to_update: Vec<(SonNodeId, SonNodeId)> = Vec::new(); // (old_id, new_id)
+
+        // 第一遍：收集所有常量节点，保留第一个出现的
+        for (node_id, node) in son_ir.get_all_nodes() {
+            if let NodeData::Constant { value, .. } = &node.kind.data {
+                let value_key = format!("{:?}", value);
+                if let Some(existing_id) = constant_nodes.insert(value_key, *node_id) {
+                    // 找到重复的常量节点，标记为删除
+                    nodes_to_remove.push(*node_id);
+                    edges_to_update.push((*node_id, existing_id));
+                }
+            }
+        }
+
+        // 第二遍：更新所有边，将指向重复节点的边改为指向保留的节点
+        for (old_id, new_id) in &edges_to_update {
+            let edges_to_update: Vec<_> = son_ir.get_all_edges()
+                .iter()
+                .filter(|edge| edge.to == *old_id)
+                .cloned()
+                .collect();
+            
+            for edge in edges_to_update {
+                let new_edge = SonEdge::new(edge.from, *new_id, edge.edge_type);
+                son_ir.remove_edge(&edge);
+                son_ir.add_edge(new_edge);
+            }
+        }
+
+        // 第三遍：删除重复的常量节点
+        let nodes_to_remove_count = nodes_to_remove.len();
+        for node_id in nodes_to_remove {
+            // 删除所有连接到该节点的边
+            let edges_to_remove: Vec<_> = son_ir.get_all_edges()
+                .iter()
+                .filter(|edge| edge.from == node_id || edge.to == node_id)
+                .cloned()
+                .collect();
+            
+            for edge in edges_to_remove {
+                son_ir.remove_edge(&edge);
+            }
+            
+            // 删除节点
+            son_ir.remove_node(node_id);
+        }
+
+        self.stats.nodes_replaced += nodes_to_remove_count;
+        print!("常量合并：删除了 {} 个重复常量节点", nodes_to_remove_count);
+    }
+
+    /// 死代码消除：删除永远不会被执行的节点
+    fn remove_dead_code(&mut self, son_ir: &mut SonIr) {
+        let mut nodes_to_remove: Vec<SonNodeId> = Vec::new();
+        
+        // 只删除真正无用的节点，采用更保守的策略
+        for (node_id, node) in son_ir.get_all_nodes() {
+            let mut should_remove = false;
+            
+            // 1. 检查是否是孤立的常量节点（没有输入也没有输出）
+            if let NodeData::Constant { .. } = &node.kind.data {
+                let has_inputs = son_ir.get_all_edges()
+                    .iter()
+                    .any(|edge| edge.to == *node_id);
+                let has_outputs = son_ir.get_all_edges()
+                    .iter()
+                    .any(|edge| edge.from == *node_id);
+                
+                if !has_inputs && !has_outputs {
+                    should_remove = true;
+                }
+            }
+            
+            // 2. 检查是否是孤立的计算节点（没有输入）
+            if let NodeData::BinaryOp { left, right } = &node.kind.data {
+                if left.is_none() && right.is_none() {
+                    let has_outputs = son_ir.get_all_edges()
+                        .iter()
+                        .any(|edge| edge.from == *node_id);
+                    if !has_outputs {
+                        should_remove = true;
+                    }
+                }
+            }
+            
+            // 3. 检查是否是孤立的Load节点（没有mem输入）
+            if let NodeData::Load { mem, .. } = &node.kind.data {
+                if mem.is_none() {
+                    let has_outputs = son_ir.get_all_edges()
+                        .iter()
+                        .any(|edge| edge.from == *node_id);
+                    if !has_outputs {
+                        should_remove = true;
+                    }
+                }
+            }
+            
+            // 4. 检查是否是孤立的Store节点（没有value输入）
+            if let NodeData::Store { value, .. } = &node.kind.data {
+                if value.is_none() {
+                    let has_outputs = son_ir.get_all_edges()
+                        .iter()
+                        .any(|edge| edge.from == *node_id);
+                    if !has_outputs {
+                        should_remove = true;
+                    }
+                }
+            }
+            
+            if should_remove {
+                nodes_to_remove.push(*node_id);
+            }
+        }
+        
+        // 删除标记的节点
+        let nodes_to_remove_count = nodes_to_remove.len();
+        for node_id in nodes_to_remove {
+            // 删除所有连接到该节点的边
+            let edges_to_remove: Vec<_> = son_ir.get_all_edges()
+                .iter()
+                .filter(|edge| edge.from == node_id || edge.to == node_id)
+                .cloned()
+                .collect();
+            
+            for edge in edges_to_remove {
+                son_ir.remove_edge(&edge);
+            }
+            
+            // 删除节点
+            son_ir.remove_node(node_id);
+        }
+        
+        self.stats.nodes_replaced += nodes_to_remove_count;
     }
 }
 

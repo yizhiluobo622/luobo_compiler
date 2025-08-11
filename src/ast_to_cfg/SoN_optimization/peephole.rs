@@ -27,6 +27,7 @@ pub struct PeepholeStats {
     pub dead_nodes_removed: usize,
     pub constant_foldings: usize,
     pub strength_reductions: usize,
+    pub expression_reorderings: usize,
     pub iterations: usize,
 }
 
@@ -36,6 +37,7 @@ pub struct PeepholeConfig {
     pub enable_strength_reduction: bool,
     pub enable_dead_code_elimination: bool,
     pub enable_identity_elimination: bool,
+    pub enable_expression_reordering: bool,
     pub max_iterations: usize,
     pub enable_debug: bool,
 }
@@ -47,6 +49,7 @@ impl Default for PeepholeConfig {
             enable_strength_reduction: true,
             enable_dead_code_elimination: true,
             enable_identity_elimination: true,
+            enable_expression_reordering: true,
             max_iterations: 10,
             enable_debug: false,
         }
@@ -131,45 +134,34 @@ impl PeepholeOptimizer {
     
     /// 尝试 peephole 优化
     fn try_peephole_opt(&mut self, node_id: SonNodeId, son_ir: &mut SonIr) -> Option<SonNodeId> {
-        let node = son_ir.get_node(node_id)?;
-        
-        // 常量折叠
-        if self.config.enable_constant_folding {
-            if let Some(constant_id) = self.try_constant_fold(node_id, son_ir) {
-                self.stats.constant_foldings += 1;
-                return Some(constant_id);
-            }
+        // 尝试常量折叠
+        if let Some(replacement_id) = self.try_constant_fold(node_id, son_ir) {
+            return Some(replacement_id);
         }
         
-        // 强度削弱
-        if self.config.enable_strength_reduction {
-            if let Some(replacement_id) = self.try_strength_reduction(node_id, son_ir) {
-                self.stats.strength_reductions += 1;
-                return Some(replacement_id);
-            }
+        // 尝试强度削减
+        if let Some(replacement_id) = self.try_strength_reduction(node_id, son_ir) {
+            return Some(replacement_id);
         }
         
-        // 恒等消除
-        if self.config.enable_identity_elimination {
-            if let Some(replacement_id) = self.try_identity_elimination(node_id, son_ir) {
-                return Some(replacement_id);
-            }
+        // 尝试恒等消除
+        if let Some(replacement_id) = self.try_identity_elimination(node_id, son_ir) {
+            return Some(replacement_id);
         }
         
-        // 死代码消除
-        if self.config.enable_dead_code_elimination {
-            if self.is_dead_code(node_id, son_ir) {
-                self.stats.dead_nodes_removed += 1;
-                // 标记为死亡，稍后清理
-                if let Some(node) = son_ir.get_node_mut(node_id) {
-                    node.mark_dead();
-                }
-            }
+        // 尝试比较优化
+        if let Some(replacement_id) = self.try_comparison_optimization(node_id, son_ir) {
+            return Some(replacement_id);
+        }
+        
+        // 尝试表达式重排序
+        if let Some(replacement_id) = self.try_expression_reordering(node_id, son_ir) {
+            return Some(replacement_id);
         }
         
         None
     }
-    
+
     /// 尝试常量折叠
     fn try_constant_fold(&self, node_id: SonNodeId, son_ir: &mut SonIr) -> Option<SonNodeId> {
         let node = son_ir.get_node(node_id)?;
@@ -234,69 +226,171 @@ impl PeepholeOptimizer {
         None
     }
     
-    /// 尝试恒等消除
+    /// 尝试恒等消除优化
     fn try_identity_elimination(&self, node_id: SonNodeId, son_ir: &mut SonIr) -> Option<SonNodeId> {
+        if !self.config.enable_identity_elimination {
+            return None;
+        }
+
         let node = son_ir.get_node(node_id)?;
+        let opcode = &node.kind.opcode;
         
-        match &node.kind.data {
-            NodeData::BinaryOp { left, right } => {
-                match node.kind.opcode {
-                    OpCode::Add => {
-                        // x + 0 -> x
-                        if let Some(right_id) = right {
-                            if self.is_zero(*right_id, son_ir) {
-                                return *left;
-                            }
+        match opcode {
+            OpCode::Add => {
+                // (arg + 0) -> arg
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        if self.is_zero(*right_id, son_ir) {
+                            return Some(*left_id);
                         }
-                        // 0 + x -> x
-                        if let Some(left_id) = left {
-                            if self.is_zero(*left_id, son_ir) {
-                                return *right;
-                            }
+                        if self.is_zero(*left_id, son_ir) {
+                            return Some(*right_id);
                         }
                     }
-                    OpCode::Multiply => {
-                        // x * 1 -> x
-                        if let Some(right_id) = right {
-                            if self.is_one(*right_id, son_ir) {
-                                return *left;
-                            }
-                        }
-                        // 1 * x -> x
-                        if let Some(left_id) = left {
-                            if self.is_one(*left_id, son_ir) {
-                                return *right;
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
-            NodeData::UnaryOp { operand } => {
-                match node.kind.opcode {
-                    OpCode::Minus => {
-                        // -(-x) -> x
-                        if let Some(operand_id) = operand {
-                            if let Some(operand_node) = son_ir.get_node(*operand_id) {
-                                if matches!(operand_node.kind.opcode, OpCode::Minus) {
-                                    if let NodeData::UnaryOp { operand: inner } = &operand_node.kind.data {
-                                        if let Some(inner_id) = inner {
-                                            return Some(*inner_id);
-                                        }
-                                    }
-                                }
-                            }
+            
+            OpCode::Multiply => {
+                // (arg * 1) -> arg
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        if self.is_one(*right_id, son_ir) {
+                            return Some(*left_id);
+                        }
+                        if self.is_one(*left_id, son_ir) {
+                            return Some(*right_id);
                         }
                     }
-                    _ => {}
                 }
             }
+            
+            OpCode::Divide => {
+                // (con / 1) -> con
+                if let Some(right_id) = node.inputs.get(1) {
+                    if self.is_one(*right_id, son_ir) {
+                        if let Some(left_id) = node.inputs.get(0) {
+                            return Some(*left_id);
+                        }
+                    }
+                }
+            }
+            
+            OpCode::Subtract => {
+                // (arg - arg) -> 0
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        if left_id == right_id {
+                            return self.create_constant_node(ConstantValue::Integer(0), son_ir);
+                        }
+                    }
+                }
+            }
+            
             _ => {}
         }
         
         None
     }
-    
+
+    /// 尝试比较优化
+    fn try_comparison_optimization(&self, node_id: SonNodeId, son_ir: &mut SonIr) -> Option<SonNodeId> {
+        let node = son_ir.get_node(node_id)?;
+        let opcode = &node.kind.opcode;
+        
+        match opcode {
+            OpCode::Equal => {
+                // (arg == arg) -> 1
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        if left_id == right_id {
+                            return self.create_constant_node(ConstantValue::Boolean(true), son_ir);
+                        }
+                    }
+                }
+            }
+            
+            OpCode::NotEqual => {
+                // (arg != arg) -> 0
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        if left_id == right_id {
+                            return self.create_constant_node(ConstantValue::Boolean(false), son_ir);
+                        }
+                    }
+                }
+            }
+            
+            OpCode::LessThan | OpCode::GreaterThan => {
+                // (arg < arg) -> 0, (arg > arg) -> 0
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        if left_id == right_id {
+                            return self.create_constant_node(ConstantValue::Boolean(false), son_ir);
+                        }
+                    }
+                }
+            }
+            
+            OpCode::LessEqual | OpCode::GreaterEqual => {
+                // (arg <= arg) -> 1, (arg >= arg) -> 1
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        if left_id == right_id {
+                            return self.create_constant_node(ConstantValue::Boolean(true), son_ir);
+                        }
+                    }
+                }
+            }
+            
+            _ => {}
+        }
+        
+        None
+    }
+
+    /// 尝试表达式重排序优化
+    fn try_expression_reordering(&self, node_id: SonNodeId, son_ir: &mut SonIr) -> Option<SonNodeId> {
+        if !self.config.enable_expression_reordering {
+            return None;
+        }
+
+        let node = son_ir.get_node(node_id)?;
+        let opcode = &node.kind.opcode;
+        
+        match opcode {
+            OpCode::Add | OpCode::Multiply => {
+                // 这些操作是可交换的，可以重排序以促进常量折叠
+                if let Some(left_id) = node.inputs.get(0) {
+                    if let Some(right_id) = node.inputs.get(1) {
+                        let left_id = *left_id;
+                        let right_id = *right_id;
+                        
+                        // 如果右操作数是常量，保持不变
+                        if self.is_constant(right_id, son_ir) {
+                            return None;
+                        }
+                        
+                        // 如果左操作数是常量，交换位置
+                        if self.is_constant(left_id, son_ir) {
+                            // 创建新的节点，交换操作数位置
+                            let new_node = self.create_binary_op_node(
+                                opcode.clone(),
+                                Some(right_id),
+                                Some(left_id),
+                                son_ir
+                            );
+                            return Some(new_node);
+                        }
+                    }
+                }
+            }
+            
+            _ => {}
+        }
+        
+        None
+    }
+
     /// 检查是否为死代码
     fn is_dead_code(&self, node_id: SonNodeId, son_ir: &SonIr) -> bool {
         if let Some(node) = son_ir.get_node(node_id) {
@@ -424,6 +518,15 @@ impl PeepholeOptimizer {
         }
     }
     
+    /// 检查是否为常量节点
+    fn is_constant(&self, node_id: SonNodeId, son_ir: &SonIr) -> bool {
+        if let Some(node) = son_ir.get_node(node_id) {
+            matches!(&node.kind.opcode, &OpCode::Constant)
+        } else {
+            false
+        }
+    }
+    
     /// 创建常量节点
     fn create_constant_node(&self, value: ConstantValue, son_ir: &mut SonIr) -> Option<SonNodeId> {
         let typ =         match &value {
@@ -518,5 +621,28 @@ impl PeepholeOptimizer {
     /// 设置配置
     pub fn set_config(&mut self, config: PeepholeConfig) {
         self.config = config;
+    }
+
+    /// 创建二元运算节点（辅助方法）
+    fn create_binary_op_node(&self, opcode: OpCode, left: Option<SonNodeId>, right: Option<SonNodeId>, son_ir: &mut SonIr) -> SonNodeId {
+        let mut input_nodes = Vec::new();
+        if let Some(left_id) = left {
+            input_nodes.push(left_id);
+        }
+        if let Some(right_id) = right {
+            input_nodes.push(right_id);
+        }
+        
+        let data = NodeData::BinaryOp { left, right };
+        let kind = SonNodeKind::with_data(opcode, data);
+        let node = SonNode::new(0, kind);
+        let node_id = son_ir.add_node(node);
+        
+        // 添加边
+        for input_id in input_nodes {
+            son_ir.add_edge(SonEdge::new(input_id, node_id, EdgeType::Data));
+        }
+        
+        node_id
     }
 }

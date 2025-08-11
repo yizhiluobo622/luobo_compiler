@@ -15,13 +15,23 @@ pub enum ConstantValue {
 }
 
 /// 操作类型枚举
-#[derive(Debug, Clone, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BoolOp {
+    EQ,    // ==
+    LT,    // <
+    LE,    // <=
+    GT,    // >
+    GE,    // >=
+    NE,    // !=
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpCode {
     // 控制流操作
     Start,
-    Stop,
-    Region,      // 控制流合并点
-    If,
+    Stop,           // 程序终止节点
+    Region,         // 控制流合并点
+    If,             // 条件分支节点
     Loop,
     Return,
     Break,
@@ -46,6 +56,9 @@ pub enum OpCode {
     LessEqual,
     GreaterThan,
     GreaterEqual,
+    
+    // 布尔运算节点
+    Bool,
     
     // 逻辑运算
     LogicalAnd,
@@ -104,17 +117,24 @@ pub struct SonNodeKind {
 pub enum NodeData {
     // 控制流节点
     Start {
-        args: Vec<Type>,
+        outputs: Vec<Type>,  // 动态多值输出：[ctrl, arg, ...]
+        ctrl_type: Type,     // 控制类型
+        arg_type: Type,      // 参数类型
     },
     If {
-        condition: Option<SonNodeId>,
-    },
-    Loop {
-        entry: Option<SonNodeId>,
-        back: Option<SonNodeId>,
+        condition: Option<SonNodeId>,  // 条件表达式节点
+        true_branch: Option<SonNodeId>, // true分支控制流
+        false_branch: Option<SonNodeId>, // false分支控制流
     },
     Region {
-        inputs: Vec<Option<SonNodeId>>,
+        inputs: Vec<Option<SonNodeId>>, // 控制流输入列表
+    },
+    Stop {
+        return_nodes: Vec<SonNodeId>,   // 所有return节点
+    },
+    Loop {
+        entry: Option<SonNodeId>,       // 循环入口节点
+        back: Option<SonNodeId>,        // 循环回边节点
     },
     
     // 常量节点
@@ -138,6 +158,13 @@ pub enum NodeData {
     },
     UnaryOp {
         operand: Option<SonNodeId>,
+    },
+    
+    // 布尔运算节点
+    Bool {
+        left: Option<SonNodeId>,
+        right: Option<SonNodeId>,
+        op: BoolOp,
     },
     
     // 内存操作
@@ -186,7 +213,8 @@ pub enum NodeData {
     Phi {
         label: String,
         typ: Type,
-        inputs: Vec<Option<SonNodeId>>,
+        inputs: Vec<Option<SonNodeId>>, // 数据输入：第一个是Region节点，其余是各分支的数据值
+        region: Option<SonNodeId>,       // 对应的Region节点（控制流输入）
     },
     Proj {
         index: usize,
@@ -259,6 +287,7 @@ impl SonNodeKind {
             OpCode::LessEqual => "<=".to_string(),
             OpCode::GreaterThan => ">".to_string(),
             OpCode::GreaterEqual => ">=".to_string(),
+            OpCode::Bool => "Bool".to_string(),
             OpCode::LogicalAnd => "&&".to_string(),
             OpCode::LogicalOr => "||".to_string(),
             OpCode::LogicalNot => "!".to_string(),
@@ -445,7 +474,7 @@ impl SonNode {
 }
 
 /// 边类型
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EdgeType {
     /// 数据依赖边（空心箭头）
     Data,
