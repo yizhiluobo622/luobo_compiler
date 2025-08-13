@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use crate::frontend::ast::Type;
 use crate::frontend::span::Span;
+use std::fmt;
 
 /// Sea of Nodes IR 节点 ID
 pub type SonNodeId = usize;
@@ -12,6 +13,7 @@ pub enum ConstantValue {
     Float(f64),
     Boolean(bool),
     String(String),
+    DeadControl,  // 死控制流（~Ctrl）
 }
 
 /// 操作类型枚举
@@ -537,6 +539,150 @@ pub struct TypeSystem {
     types: HashMap<String, Type>,
     /// 类型别名
     aliases: HashMap<String, String>,
+    /// 类型格结构：用于类型推断和优化
+    type_lattice: TypeLattice,
+}
+
+/// 类型格结构：实现原文要求的格理论
+#[derive(Debug, Clone)]
+pub struct TypeLattice {
+    /// 类型层次关系
+    type_hierarchy: HashMap<String, Vec<String>>,
+    /// 类型约束
+    type_constraints: HashMap<String, TypeConstraint>,
+}
+
+/// 类型约束：表示类型可能的值域
+#[derive(Debug, Clone)]
+pub struct TypeConstraint {
+    /// 类型名称
+    pub type_name: String,
+    /// 可能的值域（格的下界）
+    pub lower_bound: Option<ConstantValue>,
+    /// 可能的值域（格的上界）
+    pub upper_bound: Option<ConstantValue>,
+    /// 是否为常量
+    pub is_constant: bool,
+    /// 常量值（如果已知）
+    pub constant_value: Option<ConstantValue>,
+}
+
+impl TypeLattice {
+    /// 创建新的类型格
+    pub fn new() -> Self {
+        Self {
+            type_hierarchy: HashMap::new(),
+            type_constraints: HashMap::new(),
+        }
+    }
+    
+    /// 添加类型层次关系
+    pub fn add_type_hierarchy(&mut self, parent: String, child: String) {
+        self.type_hierarchy.entry(parent)
+            .or_insert_with(Vec::new)
+            .push(child);
+    }
+    
+    /// 获取类型的约束
+    pub fn get_type_constraint(&self, type_name: &str) -> Option<&TypeConstraint> {
+        self.type_constraints.get(type_name)
+    }
+    
+    /// 设置类型约束
+    pub fn set_type_constraint(&mut self, constraint: TypeConstraint) {
+        let type_name = constraint.type_name.clone();
+        self.type_constraints.insert(type_name, constraint);
+    }
+    
+    /// 格操作：meet（下确界）
+    pub fn meet(&self, type1: &str, type2: &str) -> Option<String> {
+        // 找到两个类型的公共父类型
+        if let (Some(parents1), Some(parents2)) = (
+            self.type_hierarchy.get(type1),
+            self.type_hierarchy.get(type2)
+        ) {
+            for parent in parents1 {
+                if parents2.contains(parent) {
+                    return Some(parent.clone());
+                }
+            }
+        }
+        None
+    }
+    
+    /// 格操作：join（上确界）
+    pub fn join(&self, type1: &str, type2: &str) -> Option<String> {
+        // 找到两个类型的公共子类型
+        if let (Some(children1), Some(children2)) = (
+            self.type_hierarchy.get(type1),
+            self.type_hierarchy.get(type2)
+        ) {
+            for child in children1 {
+                if children2.contains(child) {
+                    return Some(child.clone());
+                }
+            }
+        }
+        None
+    }
+    
+    /// 类型推断：基于格结构推断节点类型
+    pub fn infer_node_type(&self, input_types: &[&Type]) -> Option<Type> {
+        if input_types.is_empty() {
+            return None;
+        }
+        
+        // 使用meet操作找到最具体的类型
+        let mut inferred_type = input_types[0];
+        for input_type in input_types.iter().skip(1) {
+            if let Some(common_type) = self.meet(&inferred_type.to_string(), &input_type.to_string()) {
+                // 这里需要将字符串类型名转换回Type类型
+                // 简化实现，实际应该查找类型映射
+                inferred_type = input_type; // 临时简化
+            }
+        }
+        
+        Some(inferred_type.clone())
+    }
+}
+
+impl TypeConstraint {
+    /// 创建新的类型约束
+    pub fn new(type_name: String) -> Self {
+        Self {
+            type_name,
+            lower_bound: None,
+            upper_bound: None,
+            is_constant: false,
+            constant_value: None,
+        }
+    }
+    
+    /// 设置为常量
+    pub fn set_constant(&mut self, value: ConstantValue) {
+        self.is_constant = true;
+        self.constant_value = Some(value.clone());
+        self.lower_bound = Some(value.clone());
+        self.upper_bound = Some(value);
+    }
+    
+    /// 设置值域范围
+    pub fn set_range(&mut self, lower: ConstantValue, upper: ConstantValue) {
+        self.lower_bound = Some(lower);
+        self.upper_bound = Some(upper);
+        self.is_constant = false;
+        self.constant_value = None;
+    }
+    
+    /// 检查是否为常量
+    pub fn is_constant(&self) -> bool {
+        self.is_constant
+    }
+    
+    /// 获取常量值
+    pub fn get_constant_value(&self) -> Option<&ConstantValue> {
+        self.constant_value.as_ref()
+    }
 }
 
 impl TypeSystem {
@@ -545,12 +691,45 @@ impl TypeSystem {
         Self {
             types: HashMap::new(),
             aliases: HashMap::new(),
+            type_lattice: TypeLattice::new(),
         }
     }
     
     /// 注册类型
     pub fn register_type(&mut self, name: String, typ: Type) {
+        let type_name = name.clone();
         self.types.insert(name, typ);
+        
+        // 为基本类型创建类型约束
+        let mut constraint = TypeConstraint::new(type_name.clone());
+        match &self.types[&type_name] {
+            Type::IntType => {
+                constraint.set_range(
+                    ConstantValue::Integer(i64::MIN),
+                    ConstantValue::Integer(i64::MAX)
+                );
+            }
+            Type::FloatType => {
+                constraint.set_range(
+                    ConstantValue::Float(f64::NEG_INFINITY),
+                    ConstantValue::Float(f64::INFINITY)
+                );
+            }
+            Type::BoolType => {
+                constraint.set_range(
+                    ConstantValue::Boolean(false),
+                    ConstantValue::Boolean(true)
+                );
+            }
+            Type::CharType => {
+                constraint.set_range(
+                    ConstantValue::Integer(0),
+                    ConstantValue::Integer(255)
+                );
+            }
+            _ => {}
+        }
+        self.type_lattice.set_type_constraint(constraint);
     }
     
     /// 查找类型
@@ -569,6 +748,54 @@ impl TypeSystem {
             self.types.get(alias)
         } else {
             self.types.get(name)
+        }
+    }
+    
+    /// 获取类型格
+    pub fn get_type_lattice(&self) -> &TypeLattice {
+        &self.type_lattice
+    }
+    
+    /// 获取类型格的可变引用
+    pub fn get_type_lattice_mut(&mut self) -> &mut TypeLattice {
+        &mut self.type_lattice
+    }
+    
+    /// 检查节点是否为常量（原文要求的核心功能）
+    pub fn is_node_constant(&self, node_id: SonNodeId, son_ir: &SonIr) -> bool {
+        if let Some(node) = son_ir.get_node(node_id) {
+            if let Some(node_type) = &node.node_type {
+                if let Some(constraint) = self.type_lattice.get_type_constraint(&node_type.to_string()) {
+                    return constraint.is_constant();
+                }
+            }
+        }
+        false
+    }
+    
+    /// 获取节点的常量值（原文要求的核心功能）
+    pub fn get_node_constant_value(&self, node_id: SonNodeId, son_ir: &SonIr) -> Option<&ConstantValue> {
+        if let Some(node) = son_ir.get_node(node_id) {
+            if let Some(node_type) = &node.node_type {
+                if let Some(constraint) = self.type_lattice.get_type_constraint(&node_type.to_string()) {
+                    return constraint.get_constant_value();
+                }
+            }
+        }
+        None
+    }
+    
+    /// 设置节点为常量（原文要求的核心功能）
+    pub fn set_node_as_constant(&mut self, node_id: SonNodeId, value: ConstantValue, son_ir: &mut SonIr) {
+        if let Some(node) = son_ir.get_node_mut(node_id) {
+            if let Some(node_type) = &node.node_type {
+                let type_name = node_type.to_string();
+                if let Some(constraint) = self.type_lattice.get_type_constraint(&type_name) {
+                    let mut new_constraint = constraint.clone();
+                    new_constraint.set_constant(value);
+                    self.type_lattice.set_type_constraint(new_constraint);
+                }
+            }
         }
     }
 }
@@ -958,5 +1185,75 @@ impl SonIr {
         self.nodes.get(&node_id)
             .map(|node| node.control_outputs.clone())
             .unwrap_or_default()
+    }
+
+    /// 递归杀死节点：杀死指定节点及其所有未使用的输入节点
+    pub fn kill_node_recursively(&mut self, node_id: SonNodeId) -> Result<(), String> {
+        let node = self.nodes.get(&node_id)
+            .ok_or_else(|| format!("Node {} does not exist", node_id))?;
+        
+        // 如果节点被标记为重要，不能杀死
+        if node.is_keep {
+            return Ok(());
+        }
+        
+        // 收集所有输入节点
+        let mut inputs_to_check = Vec::new();
+        inputs_to_check.extend(node.inputs.iter().cloned());
+        inputs_to_check.extend(node.control_inputs.iter().cloned());
+        
+        // 先杀死当前节点
+        self.remove_node(node_id)?;
+        
+        // 递归检查输入节点是否可以杀死
+        for input_id in inputs_to_check {
+            if let Some(input_node) = self.nodes.get(&input_id) {
+                // 如果输入节点没有其他输出，且不是重要节点，则递归杀死
+                if !input_node.is_keep && 
+                   input_node.outputs.is_empty() && 
+                   input_node.control_outputs.is_empty() {
+                    self.kill_node_recursively(input_id)?;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// 检查节点是否可以被杀死（没有输出且不是重要节点）
+    pub fn can_kill_node(&self, node_id: SonNodeId) -> bool {
+        if let Some(node) = self.nodes.get(&node_id) {
+            !node.is_keep && 
+            node.outputs.is_empty() && 
+            node.control_outputs.is_empty()
+        } else {
+            false
+        }
+    }
+}
+
+// 为Type实现Display trait以支持to_string()
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::IntType => write!(f, "IntType"),
+            Type::FloatType => write!(f, "FloatType"),
+            Type::BoolType => write!(f, "BoolType"),
+            Type::CharType => write!(f, "CharType"),
+            Type::VoidType => write!(f, "VoidType"),
+            Type::ArrayType { element_type, array_size } => {
+                if let Some(size) = array_size {
+                    write!(f, "ArrayType[{}; {}]", element_type, size)
+                } else {
+                    write!(f, "ArrayType[{}]", element_type)
+                }
+            }
+            Type::PointerType { target_type } => {
+                write!(f, "PointerType({})", target_type)
+            }
+            Type::FunctionType { return_type, parameter_types } => {
+                write!(f, "FunctionType({:?} -> {})", parameter_types, return_type)
+            }
+        }
     }
 }
