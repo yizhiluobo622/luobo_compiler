@@ -290,6 +290,7 @@ impl ASTToTACConverter {
                     BinaryOperator::Subtract => TACBinaryOp::Subtract,
                     BinaryOperator::Multiply => TACBinaryOp::Multiply,
                     BinaryOperator::Divide => TACBinaryOp::Divide,
+                    BinaryOperator::Modulo => TACBinaryOp::Modulo,
                     _ => return Err(format!("不支持的二元操作符: {:?}", operator)),
                 };
                 
