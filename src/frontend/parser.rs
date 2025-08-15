@@ -26,6 +26,8 @@ pub struct Parser<'a> {
     current_token: LocatedToken,
     /// 待发出的额外声明（用于逗号分隔的多变量声明在局部作用域展开）
     pending_declarations: Vec<Ast>,
+    /// 是否在遇到第一个return语句后跳过后续的死代码
+    skip_dead_code_after_return: bool,
 }
 
 /// 语法解析错误
@@ -59,6 +61,7 @@ impl<'a> Parser<'a> {
             lexer,
             current_token,
             pending_declarations: Vec::new(),
+            skip_dead_code_after_return: true,
         }
     }
 
@@ -444,6 +447,7 @@ impl<'a> Parser<'a> {
     /// 格式：{ 语句1; 语句2; ... }
     /// 
     /// 支持错误恢复：遇到语句解析错误时，跳过该语句继续解析后续语句
+    /// 支持死代码优化：当启用skip_dead_code_after_return时，遇到第一个return语句后跳过后续所有代码
     /// 
     /// # 返回
     /// * `Ok(Ast)` - 解析成功，返回复合语句AST节点
@@ -452,11 +456,33 @@ impl<'a> Parser<'a> {
         let block_start_span = self.current_token.span.clone();
         let mut statements = Vec::new();
         let mut all_errors = Vec::new();
+        let mut encountered_return = false;
         
         // 解析块内的所有语句，直到遇到'}'
         while !matches!(self.current_token.token, Token::RBrace) && !self.is_eof() {
+            // 如果启用了死代码跳过且已经遇到return语句，则跳过当前语句
+            if self.skip_dead_code_after_return && encountered_return {
+                // 跳过当前语句，不添加到AST中
+                match self.parse_statement() {
+                    Ok(_) => {
+                        // 忽略解析结果，继续跳过
+                        continue;
+                    }
+                    Err(errors) => {
+                        // 即使有错误也继续跳过，因为这些都是死代码
+                        all_errors.extend(errors);
+                        self.recover_from_error();
+                        continue;
+                    }
+                }
+            }
+            
             match self.parse_statement() {
                 Ok(statement) => {
+                    // 检查是否是return语句
+                    if let AstKind::Statement(Statement::Return { .. }) = &statement.kind {
+                        encountered_return = true;
+                    }
                     statements.push(statement);
                 }
                 Err(errors) => {
@@ -480,14 +506,14 @@ impl<'a> Parser<'a> {
             self.advance_to_next_token(); // 跳过右大括号
         }
         
-                                // 如果有错误，返回所有错误；否则返回AST
+        // 如果有错误，返回所有错误；否则返回AST
         if all_errors.is_empty() {
             Ok(Ast::new(
                 AstKind::Statement(Statement::Compound { statements }),
                 self.create_span_from_to(&block_start_span, &self.current_token.span)
             ))
         } else {
-                    Err(all_errors)
+            Err(all_errors)
         }
     }
     

@@ -98,18 +98,22 @@ impl ConstantOptimizationPass {
         Ok(result)
     }
     
-    /// 分析和优化基本块
+        /// 分析和优化基本块
     fn analyze_and_optimize_block(&mut self, block: &mut BasicBlock) -> Result<usize, String> {
         let mut optimizations = 0;
         let mut i = 0;
         
         while i < block.instructions.len() {
-            let instruction = &block.instructions[i];
+            let instruction = block.instructions[i].clone();
             
             // 尝试常量折叠
-            if let Some(folded_instruction) = self.try_constant_folding(instruction)? {
-                // 替换指令
+            if let Some(folded_instruction) = self.try_constant_folding(&instruction)? {
                 block.instructions[i] = folded_instruction;
+                optimizations += 1;
+            }
+            // 尝试消除临时变量
+            else if let Some(optimized_instruction) = self.try_temp_elimination(&instruction)? {
+                block.instructions[i] = optimized_instruction;
                 optimizations += 1;
             }
             
@@ -119,7 +123,30 @@ impl ConstantOptimizationPass {
             i += 1;
         }
         
+        // 死代码消除（需要单独处理，因为会改变指令数量）
+        let dead_code_eliminations = self.eliminate_dead_code(block)?;
+        optimizations += dead_code_eliminations;
+        
         Ok(optimizations)
+    }
+    
+    /// 执行死代码消除
+    fn eliminate_dead_code(&self, block: &mut BasicBlock) -> Result<usize, String> {
+        let mut eliminations = 0;
+        let mut i = 0;
+        
+        while i < block.instructions.len() {
+            if let Some(dead_index) = self.try_dead_code_elimination(&block.instructions, i)? {
+                // 删除死代码指令
+                block.instructions.remove(dead_index);
+                eliminations += 1;
+                // 不需要增加i，因为后面的指令会前移
+            } else {
+                i += 1;
+            }
+        }
+        
+        Ok(eliminations)
     }
     
     /// 从指令更新常量映射
@@ -200,6 +227,109 @@ impl ConstantOptimizationPass {
             }
             
             _ => Ok(None),
+        }
+    }
+    
+    /// 尝试消除临时变量（当临时变量只被使用一次时）
+    fn try_temp_elimination(&self, instruction: &TACInstruction) -> Result<Option<TACInstruction>, String> {
+        match instruction {
+            TACInstruction::Assign { target, source } => {
+                // 如果目标是变量，源是临时变量，且临时变量是已知常量
+                if let Operand::Variable(_) = target {
+                    if let Operand::Temp(temp_id) = source {
+                        if let Some(constant_value) = self.temp_constants.get(temp_id) {
+                            // 直接替换为常量赋值
+                            let optimized_instruction = TACInstruction::Assign {
+                                target: target.clone(),
+                                source: Operand::Constant(constant_value.clone()),
+                            };
+                            return Ok(Some(optimized_instruction));
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+    
+    /// 尝试死代码消除（删除冗余赋值）
+    fn try_dead_code_elimination(&self, instructions: &[TACInstruction], current_index: usize) -> Result<Option<usize>, String> {
+        let current_instruction = &instructions[current_index];
+        
+        match current_instruction {
+            TACInstruction::Assign { target, .. } => {
+                // 检查后续指令是否覆盖了这个目标
+                for i in (current_index + 1)..instructions.len() {
+                    let next_instruction = &instructions[i];
+                    match next_instruction {
+                        TACInstruction::Assign { target: next_target, .. } => {
+                            if target == next_target {
+                                // 找到覆盖，但需要检查中间是否有使用
+                                if !self.is_variable_used_between(instructions, current_index + 1, i, target)? {
+                                    // 只有在中间没有被使用的情况下才删除
+                                    return Ok(Some(current_index));
+                                }
+                                // 如果中间被使用了，不能删除
+                                break;
+                            }
+                        }
+                        TACInstruction::Return { .. } => {
+                            // 到达return，不再有覆盖
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+    
+    /// 检查变量在两个位置之间是否被使用
+    fn is_variable_used_between(&self, instructions: &[TACInstruction], start: usize, end: usize, target: &Operand) -> Result<bool, String> {
+        for i in start..end {
+            let instruction = &instructions[i];
+            if self.instruction_uses_operand(instruction, target)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    
+    /// 检查指令是否使用了指定的操作数
+    fn instruction_uses_operand(&self, instruction: &TACInstruction, operand: &Operand) -> Result<bool, String> {
+        match instruction {
+            TACInstruction::Assign { source, .. } => {
+                Ok(source == operand)
+            }
+            TACInstruction::BinaryOp { left, right, .. } => {
+                Ok(left == operand || right == operand)
+            }
+            TACInstruction::UnaryOp { operand: op_operand, .. } => {
+                Ok(op_operand == operand)
+            }
+            TACInstruction::FunctionCall { arguments, .. } => {
+                Ok(arguments.iter().any(|arg| arg == operand))
+            }
+            TACInstruction::Return { value } => {
+                if let Some(ret_value) = value {
+                    Ok(ret_value == operand)
+                } else {
+                    Ok(false)
+                }
+            }
+            TACInstruction::ConditionalJump { condition, .. } => {
+                Ok(condition == operand)
+            }
+            TACInstruction::Jump { .. } => Ok(false),
+            TACInstruction::Label { .. } => Ok(false),
+            TACInstruction::Param { value } => {
+                Ok(value == operand)
+            }
+            TACInstruction::FunctionStart { .. } => Ok(false),
+            TACInstruction::FunctionEnd => Ok(false),
         }
     }
     

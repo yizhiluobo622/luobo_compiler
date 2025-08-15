@@ -88,13 +88,6 @@ impl ASTToTACConverter {
         // 创建新函数
         let mut function = TACFunction::new(function_name.to_string(), return_type.clone());
         
-        // 设置参数
-        for param in parameters {
-            if let AstKind::VariableDeclaration { variable_name, variable_type, .. } = &param.kind {
-                function.parameters.push((variable_name.clone(), variable_type.clone()));
-            }
-        }
-        
         // 创建入口基本块
         let entry_block = BasicBlock::new(self.block_counter);
         self.block_counter += 1;
@@ -106,6 +99,20 @@ impl ASTToTACConverter {
         
         // 清空映射器（新函数作用域）
         self.mapper.clear_mappings();
+        
+        // 设置参数（在清空映射器之后）
+        for param in parameters {
+            if let AstKind::VariableDeclaration { variable_name, variable_type, .. } = &param.kind {
+                function.parameters.push((variable_name.clone(), variable_type.clone()));
+                
+                // 将参数添加到变量映射器（作为局部变量）
+                let param_operand = Operand::Variable(variable_name.clone());
+                self.mapper.map_variable(variable_name, param_operand.clone());
+                
+                // 记录AST到IR的映射
+                self.mapper.map_ast_to_ir(param.span.start_pos, param_operand);
+            }
+        }
         
         // 处理函数体
         let body_result = self.convert_ast_node(function_body, program)?;
@@ -120,7 +127,9 @@ impl ASTToTACConverter {
         // 将当前基本块添加到函数中
         if let Some(block) = self.current_block.take() {
             if let Some(func) = &mut self.current_function {
-                func.basic_blocks[entry_block_id] = block;
+                // 使用数组索引而不是block.id来访问
+                let block_index = func.basic_blocks.iter().position(|b| b.id == entry_block_id).unwrap_or(0);
+                func.basic_blocks[block_index] = block;
             }
         }
         
@@ -140,7 +149,24 @@ impl ASTToTACConverter {
             // 记录变量映射
             self.mapper.map_variable(variable_name, var_operand.clone());
             
-            // 如果有初始值，处理表达式
+            // 为变量声明生成IR指令（即使没有初始值）
+            if let Some(block) = &mut self.current_block {
+                // 如果没有初始值，使用默认值
+                let default_value = match variable_type {
+                    Type::IntType => Operand::Constant(ConstantValue::Integer(0)),
+                    Type::FloatType => Operand::Constant(ConstantValue::Float(0.0)),
+                    Type::BoolType => Operand::Constant(ConstantValue::Boolean(false)),
+                    _ => Operand::Constant(ConstantValue::Integer(0)), // 默认
+                };
+                
+                // 添加变量声明指令
+                block.add_instruction(TACInstruction::Assign {
+                    target: var_operand.clone(),
+                    source: default_value,
+                });
+            }
+            
+            // 如果有初始值，覆盖默认值
             if let Some(init_expr) = initial_value {
                 let init_result = self.convert_ast_node(init_expr, program)?;
                 
@@ -198,6 +224,11 @@ impl ASTToTACConverter {
                 }
                 
                 Ok(last_result)
+            }
+            
+            Statement::ExpressionStatement { expression } => {
+                // 转换表达式语句
+                self.convert_ast_node(expression, program)
             }
             
             _ => Err("不支持的语句类型".to_string()),
@@ -292,6 +323,51 @@ impl ASTToTACConverter {
                         target: temp_operand.clone(),
                         op: tac_op,
                         operand: operand_result,
+                    });
+                }
+                
+                Ok(temp_operand)
+            }
+            
+            Expression::Assignment { target, value } => {
+                // 转换目标变量
+                let target_result = self.convert_ast_node(target, &mut TACProgram::new())?;
+                
+                // 转换赋值表达式
+                let value_result = self.convert_ast_node(value, &mut TACProgram::new())?;
+                
+                // 添加赋值指令
+                if let Some(block) = &mut self.current_block {
+                    block.add_instruction(TACInstruction::Assign {
+                        target: target_result,
+                        source: value_result.clone(),
+                    });
+                }
+                
+                Ok(value_result)
+            }
+            
+            Expression::FunctionCall { function_name, arguments } => {
+                // 转换所有参数
+                let mut arg_operands = Vec::new();
+                for arg in arguments {
+                    let arg_result = self.convert_ast_node(arg, &mut TACProgram::new())?;
+                    arg_operands.push(arg_result);
+                }
+                
+                // 创建临时变量存储函数调用结果
+                let temp_operand = if let Some(func) = &mut self.current_function {
+                    func.new_temp()
+                } else {
+                    Operand::Temp(0) // 临时值
+                };
+                
+                // 添加函数调用指令
+                if let Some(block) = &mut self.current_block {
+                    block.add_instruction(TACInstruction::FunctionCall {
+                        target: temp_operand.clone(),
+                        function_name: function_name.clone(),
+                        arguments: arg_operands,
                     });
                 }
                 
