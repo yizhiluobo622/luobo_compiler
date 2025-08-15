@@ -88,6 +88,9 @@ impl ASTToTACConverter {
         // 创建新函数
         let mut function = TACFunction::new(function_name.to_string(), return_type.clone());
         
+        // 设置AST参数数量
+        function.ast_parameter_count = parameters.len();
+        
         // 创建入口基本块
         let entry_block = BasicBlock::new(self.block_counter);
         self.block_counter += 1;
@@ -103,7 +106,10 @@ impl ASTToTACConverter {
         // 设置参数（在清空映射器之后）
         for param in parameters {
             if let AstKind::VariableDeclaration { variable_name, variable_type, .. } = &param.kind {
-                function.parameters.push((variable_name.clone(), variable_type.clone()));
+                // 直接修改current_function中的参数
+                if let Some(func) = &mut self.current_function {
+                    func.parameters.push((variable_name.clone(), variable_type.clone()));
+                }
                 
                 // 将参数添加到变量映射器（作为局部变量）
                 let param_operand = Operand::Variable(variable_name.clone());

@@ -313,6 +313,8 @@ pub struct TACFunction {
     pub return_type: Type,
     /// 参数列表
     pub parameters: Vec<(String, Type)>,
+    /// AST中的参数数量（用于调试）
+    pub ast_parameter_count: usize,
     /// 基本块列表
     pub basic_blocks: Vec<BasicBlock>,
     /// 临时变量计数器
@@ -327,6 +329,7 @@ impl TACFunction {
             name,
             return_type,
             parameters: Vec::new(),
+            ast_parameter_count: 0,
             basic_blocks: Vec::new(),
             temp_counter: 0,
             label_counter: 0,

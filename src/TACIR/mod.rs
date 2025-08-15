@@ -34,6 +34,7 @@ pub fn print_tac_program(program: &TACProgram) {
         println!("函数 {}: {} -> {:?}", i, function.name, function.return_type);
         
         // 打印参数
+        println!("  AST参数数量: {}, TAC IR参数数量: {}", function.ast_parameter_count, function.parameters.len());
         if !function.parameters.is_empty() {
             print!("  参数: ");
             for (j, (name, typ)) in function.parameters.iter().enumerate() {
@@ -74,7 +75,8 @@ pub fn debug_ir_structure(program: &TACProgram) {
     for (func_id, function) in program.functions.iter().enumerate() {
         println!("函数 {}: '{}'", func_id, function.name);
         println!("  返回类型: {:?}", function.return_type);
-        println!("  参数数量: {}", function.parameters.len());
+        println!("  AST参数数量: {}", function.ast_parameter_count);
+        println!("  TAC IR参数数量: {}", function.parameters.len());
         println!("  基本块数量: {}", function.basic_blocks.len());
         println!("  临时变量数量: {}", function.temp_counter);
         println!("  标签数量: {}", function.label_counter);
