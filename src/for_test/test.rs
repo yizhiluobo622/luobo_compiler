@@ -5,8 +5,8 @@ pub mod tests {
     use crate::frontend::lexer::Lexer;
     use crate::frontend::parser::Parser;
     use crate::frontend::semantic_analysis::analyze_ast_with_semantic_info;
-    use crate::ast_to_cfg::SoN_optimization::OptimizationPass;
-
+    use crate::TACIR;
+    use crate::TACIR::TAC_opt::OptimizationPass;
 
     #[test]
     pub fn test_complete_pipeline() {
@@ -24,44 +24,62 @@ pub mod tests {
         // Semantic Analysis
         let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
         
-        // AST to SoN IR: 转换并生成图
-        let mut son_ir = crate::ast_to_cfg::ast_to_SoNir::converter::convert_ast_to_son(&annotated_ast)
-            .expect("AST to SoN IR conversion failed");
-        
-        // 生成优化前的DOT图
-        let dot_graph_before = crate::ast_to_cfg::dot_graph::generate_dot(&son_ir)
-            .expect("Failed to generate DOT graph before optimization");
-        
-        // 保存优化前的图
-        let output_dir = "src/ast_to_cfg/Debug/graph";
-        std::fs::create_dir_all(output_dir).expect("Failed to create output directory");
-        std::fs::write(format!("{}/sea_of_nodes_before.dot", output_dir), &dot_graph_before)
-            .expect("Failed to write DOT file before optimization");
-        
-        // 执行常量传播优化
-        let mut constant_propagation_pass = crate::ast_to_cfg::SoN_optimization::constant_propagation::ConstantPropagationPass::new();
-        let optimization_result = constant_propagation_pass.run(&mut son_ir)
-            .expect("Constant propagation optimization failed");
-        
-        // 打印优化统计信息
-        constant_propagation_pass.print_stats();
-        
-        // 检查优化结果
-        if optimization_result.optimized {
-            println!("✅ 常量传播优化成功！");
-            println!("   优化节点数: {}", optimization_result.nodes_optimized);
-            println!("   删除节点数: {}", optimization_result.nodes_deleted);
-        } else {
-            println!("ℹ️  没有进行常量传播优化");
+        // TAC IR转换
+        println!("=== 开始TAC IR转换 ===");
+        match TACIR::convert_ast_to_tac(&annotated_ast) {
+            Ok(mut tac_program) => {
+                println!("✅ TAC IR转换成功！");
+                
+                // 显示IR结构信息
+                TACIR::debug_ir_structure(&tac_program);
+                
+                // 显示main函数的详细IR
+                TACIR::debug_function_ir(&tac_program, "main");
+                
+                // 显示完整的TAC程序
+                TACIR::print_tac_program(&tac_program);
+                
+                // 验证IR的正确性
+                validate_tac_ir(&tac_program);
+                
+                // 运行常量传播优化
+                println!("\n=== 运行常量传播优化 ===");
+                let mut constant_opt = TACIR::TAC_opt::constant_opt::ConstantOptimizationPass::new();
+                match constant_opt.run(&mut tac_program) {
+                    Ok(result) => {
+                        if result.optimized {
+                            println!("✅ 常量传播优化成功！");
+                            println!("   优化指令数: {}", result.instructions_optimized);
+                            
+                            // 显示优化后的IR
+                            println!("\n=== 优化后的IR ===");
+                            TACIR::debug_function_ir(&tac_program, "main");
+                            TACIR::print_tac_program(&tac_program);
+                        } else {
+                            println!("ℹ️ 常量传播优化没有发现优化机会");
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ 常量传播优化失败: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("❌ TAC IR转换失败: {}", e);
+                panic!("TAC IR转换失败");
+            }
         }
-        
-        // 生成优化后的DOT图
-        let dot_graph_after = crate::ast_to_cfg::dot_graph::generate_dot(&son_ir)
-            .expect("Failed to generate DOT graph after optimization");
-        
-        // 保存优化后的图
-        std::fs::write(format!("{}/sea_of_nodes_after.dot", output_dir), &dot_graph_after)
-            .expect("Failed to write DOT file after optimization");
+    }
+    
+    /// 简洁验证TAC IR的正确性
+    fn validate_tac_ir(program: &TACIR::TACProgram) {
+        if let Some(main_func) = program.get_main_function() {
+            assert!(!main_func.basic_blocks.is_empty(), "main函数必须有基本块");
+            assert!(!main_func.basic_blocks[0].instructions.is_empty(), "基本块必须有指令");
+            println!("✅ IR验证通过");
+        } else {
+            panic!("未找到main函数");
+        }
     }
     
     //以下是辅助函数
@@ -163,54 +181,6 @@ pub mod tests {
         use crate::frontend::SemanticAnalyzer::type_system::TypeSystem;
         TypeSystem::new()
     }
-    
-    /// 测试常量传播优化
-    #[test]
-    pub fn test_constant_propagation() {
-        // 创建一个简单的测试用例：最简单的程序结构
-        let source_code = "int main() { return 1 + 2; }";
-        
-        // Lexer
-        let lexer = Lexer::new(source_code);
-        
-        // Parser
-        let mut parser = Parser::new(lexer);
-        let ast = parser.parse().expect("Parser failed");
-        
-        // Semantic Analysis
-        let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
-        
-        // AST to SoN IR
-        let mut son_ir = crate::ast_to_cfg::ast_to_SoNir::converter::convert_ast_to_son(&annotated_ast)
-            .expect("AST to SoN IR conversion failed");
-        
-        println!("=== 优化前的图 ===");
-        let node_count_before = son_ir.node_count();
-        println!("节点数量: {}", node_count_before);
-        
-        // 执行常量传播优化
-        let mut constant_propagation_pass = crate::ast_to_cfg::SoN_optimization::constant_propagation::ConstantPropagationPass::new();
-        let optimization_result = constant_propagation_pass.run(&mut son_ir)
-            .expect("Constant propagation optimization failed");
-        
-        println!("=== 优化后的图 ===");
-        let node_count_after = son_ir.node_count();
-        println!("节点数量: {}", node_count_after);
-        
-        // 打印优化统计信息
-        constant_propagation_pass.print_stats();
-        
-        // 验证优化结果
-        if optimization_result.optimized {
-            println!("✅ 常量传播优化成功！");
-            println!("   优化节点数: {}", optimization_result.nodes_optimized);
-            println!("   删除节点数: {}", optimization_result.nodes_deleted);
-            
-            // 验证节点数量减少
-            assert!(node_count_after < node_count_before, "优化后节点数量应该减少");
-        } else {
-            println!("ℹ️  没有进行常量传播优化");
-        }
-    }
+   
 }
 

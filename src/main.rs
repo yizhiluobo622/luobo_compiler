@@ -6,8 +6,8 @@ use clap::Parser as ClapParser;
 use crate::frontend::lexer::Lexer;
 use crate::frontend::parser::Parser;
 mod frontend;
-mod ast_to_cfg;
 mod for_test;
+mod TACIR;
 #[derive(ClapParser, Debug)]
 #[command(author, version, about)]
 
