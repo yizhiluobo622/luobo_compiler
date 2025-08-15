@@ -11,6 +11,8 @@ pub struct NodeMapper {
     variable_map: HashMap<String, Operand>,
     /// 标签名到IR标签的映射
     label_map: HashMap<String, String>,
+    /// 数组变量名到维度的映射
+    array_info: HashMap<String, Vec<usize>>,
 }
 
 impl NodeMapper {
@@ -19,6 +21,7 @@ impl NodeMapper {
             ast_to_ir: HashMap::new(),
             variable_map: HashMap::new(),
             label_map: HashMap::new(),
+            array_info: HashMap::new(),
         }
     }
     
@@ -54,6 +57,16 @@ impl NodeMapper {
         self.label_map.get(label_name)
     }
     
+    /// 记录数组变量名到维度的映射
+    pub fn map_array_info(&mut self, var_name: &str, dims: Vec<usize>) {
+        self.array_info.insert(var_name.to_string(), dims);
+    }
+
+    /// 获取数组变量名的维度信息
+    pub fn get_array_info(&self, var_name: &str) -> Option<&Vec<usize>> {
+        self.array_info.get(var_name)
+    }
+    
     /// 检查AST节点是否已经映射
     pub fn has_mapping(&self, ast_id: usize) -> bool {
         self.ast_to_ir.contains_key(&ast_id)
@@ -69,6 +82,7 @@ impl NodeMapper {
         self.ast_to_ir.clear();
         self.variable_map.clear();
         self.label_map.clear();
+        self.array_info.clear();
     }
     
     /// 获取映射统计信息

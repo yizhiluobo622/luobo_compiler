@@ -310,6 +310,18 @@ impl ConstantOptimizationPass {
             TACInstruction::UnaryOp { operand: op_operand, .. } => {
                 Ok(op_operand == operand)
             }
+            TACInstruction::Store { value, address } => {
+                Ok(value == operand || address == operand)
+            }
+            TACInstruction::Load { address, .. } => {
+                Ok(address == operand)
+            }
+            TACInstruction::Allocate { size, .. } => {
+                Ok(size == operand)
+            }
+            TACInstruction::GetElementPtr { base, indices, .. } => {
+                Ok(base == operand || indices.iter().any(|idx| idx == operand))
+            }
             TACInstruction::FunctionCall { arguments, .. } => {
                 Ok(arguments.iter().any(|arg| arg == operand))
             }
@@ -373,6 +385,51 @@ impl ConstantOptimizationPass {
                 }
                 Ok(ConstantValue::Integer(a % b))
             }
+            // 布尔值和整数的算术运算
+            (ConstantValue::Boolean(a), BinaryOperator::Add, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } + b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Add, ConstantValue::Boolean(b)) => {
+                Ok(ConstantValue::Integer(a + if *b { 1 } else { 0 }))
+            }
+            (ConstantValue::Boolean(a), BinaryOperator::Subtract, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } - b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Subtract, ConstantValue::Boolean(b)) => {
+                Ok(ConstantValue::Integer(a - if *b { 1 } else { 0 }))
+            }
+            (ConstantValue::Boolean(a), BinaryOperator::Multiply, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } * b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Multiply, ConstantValue::Boolean(b)) => {
+                Ok(ConstantValue::Integer(a * if *b { 1 } else { 0 }))
+            }
+            (ConstantValue::Boolean(a), BinaryOperator::Divide, ConstantValue::Integer(b)) => {
+                if *b == 0 {
+                    return Err("除零错误".to_string());
+                }
+                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } / b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Divide, ConstantValue::Boolean(b)) => {
+                let b_val = if *b { 1 } else { 0 };
+                if b_val == 0 {
+                    return Err("除零错误".to_string());
+                }
+                Ok(ConstantValue::Integer(a / b_val))
+            }
+            (ConstantValue::Boolean(a), BinaryOperator::Modulo, ConstantValue::Integer(b)) => {
+                if *b == 0 {
+                    return Err("模零错误".to_string());
+                }
+                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } % b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Modulo, ConstantValue::Boolean(b)) => {
+                let b_val = if *b { 1 } else { 0 };
+                if b_val == 0 {
+                    return Err("模零错误".to_string());
+                }
+                Ok(ConstantValue::Integer(a % b_val))
+            }
             (ConstantValue::Integer(a), BinaryOperator::Equal, ConstantValue::Integer(b)) => {
                 Ok(ConstantValue::Boolean(a == b))
             }
@@ -397,6 +454,26 @@ impl ConstantOptimizationPass {
             (ConstantValue::Boolean(a), BinaryOperator::Or, ConstantValue::Boolean(b)) => {
                 Ok(ConstantValue::Boolean(*a || *b))
             }
+            // 整数和布尔值的逻辑运算
+            (ConstantValue::Integer(a), BinaryOperator::And, ConstantValue::Boolean(b)) => {
+                Ok(ConstantValue::Boolean(*a != 0 && *b))
+            }
+            (ConstantValue::Boolean(a), BinaryOperator::And, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Boolean(*a && *b != 0))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Or, ConstantValue::Boolean(b)) => {
+                Ok(ConstantValue::Boolean(*a != 0 || *b))
+            }
+            (ConstantValue::Boolean(a), BinaryOperator::Or, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Boolean(*a || *b != 0))
+            }
+            // 整数和整数的逻辑运算
+            (ConstantValue::Integer(a), BinaryOperator::And, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Boolean(*a != 0 && *b != 0))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Or, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Boolean(*a != 0 || *b != 0))
+            }
             _ => Err("不支持的二元运算类型组合".to_string()),
         }
     }
@@ -409,6 +486,9 @@ impl ConstantOptimizationPass {
             }
             (UnaryOperator::Not, ConstantValue::Boolean(a)) => {
                 Ok(ConstantValue::Boolean(!a))
+            }
+            (UnaryOperator::Not, ConstantValue::Integer(a)) => {
+                Ok(ConstantValue::Boolean(*a == 0))
             }
             (UnaryOperator::BitwiseNot, ConstantValue::Integer(a)) => {
                 Ok(ConstantValue::Integer(!a))

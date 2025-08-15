@@ -73,6 +73,31 @@ pub enum TACInstruction {
         operand: Operand,
     },
     
+    /// 内存存储: store value to address
+    Store {
+        value: Operand,
+        address: Operand,
+    },
+    
+    /// 内存加载: x = load address
+    Load {
+        target: Operand,
+        address: Operand,
+    },
+    
+    /// 内存分配: x = allocate size
+    Allocate {
+        target: Operand,
+        size: Operand,
+    },
+    
+    /// 获取数组元素指针: x = getelementptr base, indices...
+    GetElementPtr {
+        target: Operand,
+        base: Operand,
+        indices: Vec<Operand>,
+    },
+    
     /// 跳转: goto label
     Jump {
         label: String,
@@ -130,6 +155,26 @@ impl fmt::Display for TACInstruction {
             
             TACInstruction::UnaryOp { target, op, operand } => {
                 write!(f, "{} = {} {}", target, op, operand)
+            }
+            
+            TACInstruction::Store { value, address } => {
+                write!(f, "store {} to {}", value, address)
+            }
+            
+            TACInstruction::Load { target, address } => {
+                write!(f, "{} = load {}", target, address)
+            }
+            
+            TACInstruction::Allocate { target, size } => {
+                write!(f, "{} = allocate {}", target, size)
+            }
+            
+            TACInstruction::GetElementPtr { target, base, indices } => {
+                let indices_str = indices.iter()
+                    .map(|idx| idx.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "{} = getelementptr {}, [{}]", target, base, indices_str)
             }
             
             TACInstruction::Jump { label } => {
@@ -321,6 +366,8 @@ pub struct TACFunction {
     pub temp_counter: usize,
     /// 标签计数器
     pub label_counter: usize,
+    /// 数组变量信息：变量名 -> (类型, 维度列表, 总大小)
+    pub array_variables: HashMap<String, (Type, Vec<usize>, usize)>,
 }
 
 impl TACFunction {
@@ -333,6 +380,7 @@ impl TACFunction {
             basic_blocks: Vec::new(),
             temp_counter: 0,
             label_counter: 0,
+            array_variables: HashMap::new(),
         }
     }
     
@@ -343,11 +391,22 @@ impl TACFunction {
         Operand::Temp(temp_id)
     }
     
-    /// 生成新的标签
+    /// 创建新标签
     pub fn new_label(&mut self) -> String {
         let label_id = self.label_counter;
         self.label_counter += 1;
         format!("L{}", label_id)
+    }
+    
+    /// 添加数组变量
+    pub fn add_array_variable(&mut self, name: String, array_type: Type, dimensions: Vec<usize>) {
+        let total_size = dimensions.iter().product();
+        self.array_variables.insert(name, (array_type, dimensions, total_size));
+    }
+    
+    /// 获取数组信息
+    pub fn get_array_info(&self, name: &str) -> Option<&(Type, Vec<usize>, usize)> {
+        self.array_variables.get(name)
     }
     
     /// 添加基本块
