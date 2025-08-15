@@ -123,6 +123,10 @@ pub enum NodeData {
         ctrl_type: Type,     // 控制类型
         arg_type: Type,      // 参数类型
     },
+    Return {
+        return_value: Option<SonNodeId>,  // 返回值节点（数据输入）
+        control_input: Option<SonNodeId>, // 控制输入节点
+    },
     If {
         condition: Option<SonNodeId>,  // 条件表达式节点
         true_branch: Option<SonNodeId>, // true分支控制流
@@ -143,6 +147,7 @@ pub enum NodeData {
     Constant {
         value: ConstantValue,
         typ: Type,
+        start_input: Option<SonNodeId>,  // 所属的Start节点（用于图遍历，无语义含义）
     },
     Parameter {
         name: String,
@@ -346,6 +351,8 @@ pub struct SonNode {
     pub is_keep: bool,
     /// 是否被标记为死亡节点
     pub is_dead: bool,
+    /// 父节点列表（反向引用，用于快速查找使用该节点的节点）
+    pub parent_nodes: Vec<SonNodeId>,
 }
 
 impl SonNode {
@@ -363,6 +370,7 @@ impl SonNode {
             node_type: None,
             is_keep: false,
             is_dead: false,
+            parent_nodes: Vec::new(),
         }
     }
     
@@ -414,9 +422,34 @@ impl SonNode {
         self.control_outputs.retain(|&id| id != output_id);
     }
     
+    /// 添加父节点引用
+    pub fn add_parent(&mut self, parent_id: SonNodeId) {
+        if !self.parent_nodes.contains(&parent_id) {
+            self.parent_nodes.push(parent_id);
+        }
+    }
+    
+    /// 移除父节点引用
+    pub fn remove_parent(&mut self, parent_id: SonNodeId) {
+        self.parent_nodes.retain(|&id| id != parent_id);
+    }
+    
     /// 设置源位置
     pub fn set_span(&mut self, span: Span) {
         self.span = Some(span);
+    }
+    
+    /// 获取节点的格元素类型
+    pub fn get_lattice_element(&self) -> Option<&LatticeElement> {
+        // 这里需要从类型系统中获取类型约束
+        // 暂时返回None，实际实现需要访问类型系统
+        None
+    }
+    
+    /// 设置节点的格元素类型
+    pub fn set_lattice_element(&mut self, _lattice_element: LatticeElement) {
+        // 这里需要更新类型系统中的类型约束
+        // 暂时为空实现，实际实现需要访问类型系统
     }
     
     /// 添加属性
@@ -482,6 +515,8 @@ pub enum EdgeType {
     Data,
     /// 控制依赖边（实心箭头）
     Control,
+    /// 虚拟边（虚线，仅用于图遍历，不携带语义）
+    Virtual,
 }
 
 /// Sea of Nodes IR 边
@@ -557,6 +592,8 @@ pub struct TypeLattice {
 pub struct TypeConstraint {
     /// 类型名称
     pub type_name: String,
+    /// 格元素类型
+    pub lattice_element: LatticeElement,
     /// 可能的值域（格的下界）
     pub lower_bound: Option<ConstantValue>,
     /// 可能的值域（格的上界）
@@ -565,6 +602,17 @@ pub struct TypeConstraint {
     pub is_constant: bool,
     /// 常量值（如果已知）
     pub constant_value: Option<ConstantValue>,
+}
+
+/// 格元素类型
+#[derive(Debug, Clone, PartialEq)]
+pub enum LatticeElement {
+    /// Top (⊤): 节点值可能是也可能不是编译时常量
+    Top,
+    /// 常量: 节点值是已知的编译时常量
+    Constant(ConstantValue),
+    /// Bottom (⊥): 节点值不是编译时常量
+    Bottom,
 }
 
 impl TypeLattice {
@@ -592,6 +640,27 @@ impl TypeLattice {
     pub fn set_type_constraint(&mut self, constraint: TypeConstraint) {
         let type_name = constraint.type_name.clone();
         self.type_constraints.insert(type_name, constraint);
+    }
+    
+    /// 创建Top约束（⊤）：节点值可能是也可能不是编译时常量
+    pub fn create_top_constraint(&mut self, type_name: String) -> TypeConstraint {
+        let mut constraint = TypeConstraint::new(type_name);
+        constraint.lattice_element = LatticeElement::Top;
+        constraint
+    }
+    
+    /// 创建Bottom约束（⊥）：节点值不是编译时常量
+    pub fn create_bottom_constraint(&mut self, type_name: String) -> TypeConstraint {
+        let mut constraint = TypeConstraint::new(type_name);
+        constraint.lattice_element = LatticeElement::Bottom;
+        constraint
+    }
+    
+    /// 创建常量约束：节点值是已知的编译时常量
+    pub fn create_constant_constraint(&mut self, type_name: String, value: ConstantValue) -> TypeConstraint {
+        let mut constraint = TypeConstraint::new(type_name);
+        constraint.set_constant(value);
+        constraint
     }
     
     /// 格操作：meet（下确界）
@@ -651,6 +720,7 @@ impl TypeConstraint {
     pub fn new(type_name: String) -> Self {
         Self {
             type_name,
+            lattice_element: LatticeElement::Top,
             lower_bound: None,
             upper_bound: None,
             is_constant: false,
@@ -663,7 +733,8 @@ impl TypeConstraint {
         self.is_constant = true;
         self.constant_value = Some(value.clone());
         self.lower_bound = Some(value.clone());
-        self.upper_bound = Some(value);
+        self.upper_bound = Some(value.clone());
+        self.lattice_element = LatticeElement::Constant(value);
     }
     
     /// 设置值域范围
@@ -672,6 +743,7 @@ impl TypeConstraint {
         self.upper_bound = Some(upper);
         self.is_constant = false;
         self.constant_value = None;
+        self.lattice_element = LatticeElement::Bottom;
     }
     
     /// 检查是否为常量
@@ -682,6 +754,63 @@ impl TypeConstraint {
     /// 获取常量值
     pub fn get_constant_value(&self) -> Option<&ConstantValue> {
         self.constant_value.as_ref()
+    }
+    
+    /// 获取格元素类型
+    pub fn get_lattice_element(&self) -> &LatticeElement {
+        &self.lattice_element
+    }
+    
+    /// 格移动：向上移动（朝向Top）- 用于窥孔优化
+    /// 窥孔优化是悲观的，假设最坏情况直到能证明更好
+    pub fn move_up_lattice(&mut self) {
+        match &self.lattice_element {
+            LatticeElement::Bottom => {
+                // 从Bottom移动到常量（如果可能）
+                if let Some(value) = &self.constant_value {
+                    self.lattice_element = LatticeElement::Constant(value.clone());
+                }
+            }
+            LatticeElement::Constant(_) => {
+                // 从常量移动到Top（表示可能是也可能不是常量）
+                self.lattice_element = LatticeElement::Top;
+            }
+            LatticeElement::Top => {
+                // 已经在Top，不需要移动
+            }
+        }
+    }
+    
+    /// 格移动：向下移动（朝向Bottom）- 用于乐观优化
+    /// 乐观优化从Top开始，向下移动直到假设被证明错误
+    pub fn move_down_lattice(&mut self, new_constraint: &TypeConstraint) {
+        match &new_constraint.lattice_element {
+            LatticeElement::Constant(value) => {
+                // 如果新约束是常量，向下移动到常量
+                self.lattice_element = LatticeElement::Constant(value.clone());
+                self.is_constant = true;
+                self.constant_value = Some(value.clone());
+            }
+            LatticeElement::Bottom => {
+                // 如果新约束是Bottom，向下移动
+                self.lattice_element = LatticeElement::Bottom;
+                self.is_constant = false;
+                self.constant_value = None;
+            }
+            LatticeElement::Top => {
+                // 如果新约束是Top，保持当前状态
+            }
+        }
+    }
+    
+    /// 检查是否为Top
+    pub fn is_top(&self) -> bool {
+        matches!(self.lattice_element, LatticeElement::Top)
+    }
+    
+    /// 检查是否为Bottom
+    pub fn is_bottom(&self) -> bool {
+        matches!(self.lattice_element, LatticeElement::Bottom)
     }
 }
 
@@ -846,6 +975,7 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => from_node.add_output(edge.to),
                 EdgeType::Control => from_node.add_control_output(edge.to),
+                EdgeType::Virtual => (), // 虚拟边不影响输入输出列表
             }
         }
         
@@ -853,6 +983,13 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => to_node.add_input(edge.from),
                 EdgeType::Control => to_node.add_control_input(edge.from),
+                EdgeType::Virtual => (), // 虚拟边不影响输入输出列表
+            }
+            
+            // 维护父节点引用（反向引用）
+            match edge.edge_type {
+                EdgeType::Data | EdgeType::Control => to_node.add_parent(edge.from),
+                EdgeType::Virtual => (), // 虚拟边不影响父节点引用
             }
         }
         
@@ -866,6 +1003,7 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => from_node.remove_output(edge.to),
                 EdgeType::Control => from_node.remove_control_output(edge.to),
+                EdgeType::Virtual => (), // 虚拟边不影响输入输出列表
             }
         }
         
@@ -873,6 +1011,13 @@ impl SonIr {
             match edge.edge_type {
                 EdgeType::Data => to_node.remove_input(edge.from),
                 EdgeType::Control => to_node.remove_control_input(edge.from),
+                EdgeType::Virtual => (), // 虚拟边不影响输入输出列表
+            }
+            
+            // 维护父节点引用（反向引用）
+            match edge.edge_type {
+                EdgeType::Data | EdgeType::Control => to_node.remove_parent(edge.from),
+                EdgeType::Virtual => (), // 虚拟边不影响父节点引用
             }
         }
         
@@ -1154,9 +1299,27 @@ impl SonIr {
 
     /// 创建常量节点
     pub fn create_constant_node(&mut self, value: ConstantValue, typ: Type) -> SonNodeId {
-        let constant_kind = SonNodeKind::with_data(OpCode::Constant, NodeData::Constant { value, typ });
+        let constant_kind = SonNodeKind::with_data(OpCode::Constant, NodeData::Constant { 
+            value, 
+            typ,
+            start_input: None  // 初始时没有Start节点，后续设置
+        });
         let constant_node = SonNode::new(0, constant_kind); // ID will be set by add_node
         self.add_node(constant_node)
+    }
+    
+    /// 设置常量节点的Start输入（用于图遍历）
+    pub fn set_constant_start_input(&mut self, constant_id: SonNodeId, start_id: SonNodeId) -> Result<(), String> {
+        if let Some(node) = self.nodes.get_mut(&constant_id) {
+            if let NodeData::Constant { start_input, .. } = &mut node.kind.data {
+                *start_input = Some(start_id);
+                Ok(())
+            } else {
+                Err("节点不是Constant类型".to_string())
+            }
+        } else {
+            Err("节点不存在".to_string())
+        }
     }
 
     /// 获取节点的所有前驱节点（输入节点）

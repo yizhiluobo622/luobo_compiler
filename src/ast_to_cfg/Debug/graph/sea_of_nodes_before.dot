@@ -1,0 +1,30 @@
+digraph SeaOfNodes {
+  rankdir=BT;
+  node [shape=box, style=filled];
+  2 [label="Const_Integer(2)_2", fillcolor="lightgreen"];
+  10 [label="Return_10", fillcolor="lightcoral"];
+  0 [label="Start_0", fillcolor="lightblue"];
+  7 [label="Const_Integer(5)_7", fillcolor="lightgreen"];
+  8 [label="Divide_8", fillcolor="lightgray"];
+  9 [label="Subtract_9", fillcolor="lightgray"];
+  1 [label="Const_Integer(1)_1", fillcolor="lightgreen"];
+  3 [label="Const_Integer(3)_3", fillcolor="lightgreen"];
+  4 [label="Multiply_4", fillcolor="lightgray"];
+  6 [label="Const_Integer(4)_6", fillcolor="lightgreen"];
+  5 [label="Add_5", fillcolor="lightgray"];
+  1 -> 0 [style=dotted, color=gray];
+  2 -> 0 [style=dotted, color=gray];
+  3 -> 0 [style=dotted, color=gray];
+  4 -> 2 [style=solid, color=black, label="left"];
+  4 -> 3 [style=solid, color=black, label="right"];
+  5 -> 1 [style=solid, color=black, label="left"];
+  5 -> 4 [style=solid, color=black, label="right"];
+  6 -> 0 [style=dotted, color=gray];
+  7 -> 0 [style=dotted, color=gray];
+  8 -> 6 [style=solid, color=black, label="left"];
+  8 -> 7 [style=solid, color=black, label="right"];
+  9 -> 5 [style=solid, color=black, label="left"];
+  9 -> 8 [style=solid, color=black, label="right"];
+  10 -> 0 [style=solid, color=red];
+  10 -> 9 [style=solid, color=black, label="control"];
+}

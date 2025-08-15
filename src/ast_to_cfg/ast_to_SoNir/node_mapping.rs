@@ -124,7 +124,7 @@ impl NodeMapping {
             }
         };
         
-        let data = NodeData::Constant { value, typ };
+        let data = NodeData::Constant { value, typ, start_input: None };
         Some(SonNodeKind::with_data(OpCode::Constant, data))
     }
     
@@ -179,7 +179,7 @@ impl NodeMapping {
     
     /// 创建常量节点
     pub fn create_constant_node(value: ConstantValue, typ: Type) -> SonNodeKind {
-        let data = NodeData::Constant { value, typ };
+        let data = NodeData::Constant { value, typ, start_input: None };
         SonNodeKind::with_data(OpCode::Constant, data)
     }
     
