@@ -1464,19 +1464,28 @@ impl<'a> Parser<'a> {
             } else {
                 // 尝试解析一个表达式作为维度
                 let size_expr = self.parse_expression()?;
-                // 尝试常量折叠为整数
-                if let AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(v))) = &size_expr.kind {
-                    if *v <= 0 {
-                        let error = ParseError {
-                            message: "数组大小必须是正整数".to_string(),
-                            span: size_expr.span.clone(),
-                        };
-                        return Err(vec![error]);
+                // 尝试常量折叠为整数或标识符
+                match &size_expr.kind {
+                    AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(v))) => {
+                        if *v <= 0 {
+                            let error = ParseError {
+                                message: "数组大小必须是正整数".to_string(),
+                                span: size_expr.span.clone(),
+                            };
+                            return Err(vec![error]);
+                        }
+                        Some(*v as usize)
                     }
-                    Some(*v as usize)
-                } else {
-                    // 暂不支持非常量维度，先标记为未知大小
-                    None
+                    AstKind::Expression(Expression::Identifier { name }) => {
+                        // 支持常量标识符作为数组大小
+                        // 注意：这里我们暂时标记为 None，在语义分析阶段会处理
+                        // 因为解析器阶段无法确定常量的实际值
+                        None
+                    }
+                    _ => {
+                        // 暂不支持其他类型的表达式作为数组大小
+                        None
+                    }
                 }
             };
             

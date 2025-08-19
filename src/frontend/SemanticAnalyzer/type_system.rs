@@ -62,11 +62,16 @@ impl TypeSystem {
                 }
             }
             Expression::Identifier { name } => {
-                // 从符号表中查找变量类型
+                // 从符号表中查找类型
                 if let Some(var_type) = symbol_table.get_variable_type(name) {
                     Ok(var_type)
                 } else {
-                    Err(format!("未定义的变量：'{}'", name))
+                    // 如果变量表中没有，尝试从符号表中查找（可能是在其他作用域中）
+                    if let Some(symbol) = symbol_table.lookup_symbol(name) {
+                                            Ok(symbol.data_type.clone())
+                    } else {
+                        Err(format!("未定义的变量：'{}'", name))
+                    }
                 }
             }
             Expression::BinaryOperation { operator, .. } => {
@@ -96,9 +101,15 @@ impl TypeSystem {
                 let _index_type = self.deduce_ast_type_with_depth(index, symbol_table, 0)?;
                 
                 match array_type {
-                    Type::ArrayType { element_type, .. } => Ok(*element_type),
-                    Type::PointerType { target_type } => Ok(*target_type),
-                    _ => Err("只能对数组或指针类型进行下标访问".to_string()),
+                    Type::ArrayType { element_type, .. } => {
+                        Ok(*element_type)
+                    }
+                    Type::PointerType { target_type } => {
+                        Ok(*target_type)
+                    }
+                    _ => {
+                        Err("只能对数组或指针类型进行下标访问".to_string())
+                    }
                 }
             }
             Expression::FunctionCall { function_name, .. } => {
@@ -177,20 +188,13 @@ impl TypeSystem {
                 }
             }
             Expression::Identifier { name } => {
-                // 从符号表中查找变量类型
+                // 从符号表中查找类型
                 if let Some(var_type) = symbol_table.get_variable_type(name) {
                     Ok(var_type)
                 } else {
-                    // 如果变量未定义，检查是否是全局数组
-                    if name == "a" {
-                        // 假设 a 是全局数组 int a[5][20000]
-                        Ok(Type::ArrayType {
-                            element_type: Box::new(Type::ArrayType {
-                                element_type: Box::new(Type::IntType),
-                                array_size: Some(20000),
-                            }),
-                            array_size: Some(5),
-                        })
+                    // 如果变量表中没有，尝试从符号表中查找（可能是在其他作用域中）
+                    if let Some(symbol) = symbol_table.lookup_symbol(name) {
+                        Ok(symbol.data_type.clone())
                     } else {
                         Err(format!("未定义的变量：'{}'", name))
                     }
@@ -330,31 +334,45 @@ impl TypeSystem {
         }
     }
     
-    /// 推导AST节点的类型（公共接口）
+    /// 推导AST节点的类型
+    /// 
+    /// 按照clang设计理念：提供准确的类型推导
     /// 
     /// # 参数
     /// * `ast` - AST节点
-    /// * `symbol_table` - 符号表（用于查询变量和函数类型）
+    /// * `symbol_table` - 符号表
     /// 
     /// # 返回
     /// * `Ok(Type)` - 推导出的类型
     /// * `Err(String)` - 类型推导失败
     pub fn deduce_ast_type(&self, ast: &Ast, symbol_table: &SymbolTable) -> Result<Type, String> {
         // 使用简化的类型推导，避免深度递归
-        match &ast.kind {
-            AstKind::Expression(expr) => self.deduce_expression_type_simple(expr, symbol_table),
-            AstKind::Type(typ) => Ok(typ.clone()),
-            _ => Err("无法推导非表达式AST节点的类型".to_string()),
-        }
+        let result = match &ast.kind {
+            AstKind::Expression(expr) => {
+                self.deduce_expression_type_simple(expr, symbol_table)
+            }
+            AstKind::Type(typ) => {
+                Ok(typ.clone())
+            }
+            _ => {
+                Err("无法推导非表达式AST节点的类型".to_string())
+            }
+        };
+        
+        result
     }
     
     /// 推导AST节点的类型（带深度限制）
     fn deduce_ast_type_with_depth(&self, ast: &Ast, symbol_table: &SymbolTable, depth: usize) -> Result<Type, String> {
-        match &ast.kind {
-            AstKind::Expression(expr) => self.deduce_expression_type_with_depth(expr, symbol_table, depth),
+        let result = match &ast.kind {
+            AstKind::Expression(expr) => {
+                self.deduce_expression_type_with_depth(expr, symbol_table, depth)
+            }
             AstKind::Type(typ) => Ok(typ.clone()),
             _ => Err("无法推导非表达式AST节点的类型".to_string()),
-        }
+        };
+        
+        result
     }
     
     /// 检查类型兼容性
@@ -397,17 +415,17 @@ impl TypeSystem {
     /// * `None` - 无法转换
     pub fn get_conversion_rule(&self, source_type: &Type, target_type: &Type) -> Option<String> {
         if source_type == target_type {
-            return Some("相同类型，无需转换".to_string());
-        }
-        
-        match (source_type, target_type) {
-            (Type::IntType, Type::FloatType) => {
-                Some("隐式转换：int -> float".to_string())
+            Some("相同类型，无需转换".to_string())
+        } else {
+            match (source_type, target_type) {
+                (Type::IntType, Type::FloatType) => {
+                    Some("隐式转换：int -> float".to_string())
+                }
+                (Type::FloatType, Type::IntType) => {
+                    Some("警告：float -> int 可能丢失精度".to_string())
+                }
+                _ => None,
             }
-            (Type::FloatType, Type::IntType) => {
-                Some("警告：float -> int 可能丢失精度".to_string())
-            }
-            _ => None,
         }
     }
     

@@ -26,11 +26,13 @@ impl VarChecker {
     /// # 参数
     /// * `var_decl` - 变量声明AST节点
     /// * `symbol_table` - 符号表
+    /// * `type_system` - 类型系统（用于计算常量表达式）
     /// * `errors` - 错误列表
     pub fn collect_variable_declaration(
         &self,
         var_decl: &Ast,
         symbol_table: &mut SymbolTable,
+        type_system: &TypeSystem,
         errors: &mut Vec<SemanticError>,
     ) {
         match &var_decl.kind {
@@ -117,6 +119,14 @@ impl VarChecker {
                     if let Some(init_expr) = initial_value {
                         self.check_array_initialization(init_expr, variable_type, symbol_table, type_system, errors);
                         return; // 数组初始化有特殊处理，不走普通初始值检查
+                    }
+                }
+                
+                // 处理数组大小未知的情况（array_size: None）
+                if let Type::ArrayType { element_type, array_size } = variable_type {
+                    if array_size.is_none() {
+                        // 数组大小未知，这是正常的，因为解析器无法解析 const 常量作为数组大小
+                        // 在语义分析阶段，我们接受 array_size: None 的数组类型
                     }
                 }
                 

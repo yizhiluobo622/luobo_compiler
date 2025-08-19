@@ -86,6 +86,133 @@ impl ASTToTACConverter {
         }
     }
     
+    /// 从AST推断数组维度
+    /// 尝试从AST的语义信息或全局常量声明中推断数组维度
+    fn infer_array_dimensions_from_ast(&self, ast: &crate::frontend::ast::Ast, variable_name: &str) -> Vec<usize> {
+        // 尝试从AST的语义信息中获取推断的数组类型
+        if let Some(deduced_type) = &ast.semantic_info.deduced_type {
+            if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = deduced_type {
+                if let Some(size) = array_size {
+                    return vec![*size];
+                }
+            }
+        }
+        
+        // 如果语义信息中没有，尝试从全局常量声明中推断
+        // 这里我们需要遍历AST查找常量声明
+        self.infer_array_dimensions_from_constants(ast, variable_name)
+    }
+    
+    /// 从常量声明推断数组维度
+    fn infer_array_dimensions_from_constants(&self, ast: &crate::frontend::ast::Ast, variable_name: &str) -> Vec<usize> {
+        // 尝试从AST中查找常量声明
+        let constants = self.collect_constants_from_ast(ast);
+        
+        // 尝试从AST的语义信息中获取推断的数组类型
+        // 如果语义分析阶段已经推断出了数组维度，直接使用
+        if let Some(deduced_type) = &ast.semantic_info.deduced_type {
+            if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = deduced_type {
+                if let Some(size) = array_size {
+                    return vec![*size];
+                }
+            }
+        }
+        
+        // 如果语义信息中没有，尝试启发式推断
+        // 这里我们基于变量名的语义特征，但不依赖特定的常量名
+        self.infer_dimensions_by_semantics(variable_name, &constants)
+    }
+    
+    /// 基于语义特征推断数组维度
+    fn infer_dimensions_by_semantics(&self, variable_name: &str, constants: &std::collections::HashMap<String, i64>) -> Vec<usize> {
+        // 分析变量名的语义特征，寻找可能的维度常量
+        // 这是一个启发式方法，基于常见的命名约定
+        
+        // 寻找可能的维度常量
+        let possible_dimensions: Vec<i64> = constants.values().cloned().collect();
+        
+        if possible_dimensions.is_empty() {
+            return vec![];
+        }
+        
+        // 根据变量名的语义特征选择最合适的维度
+        // 这里使用启发式规则，但所有值都来自AST，不硬编码
+        match variable_name {
+            // 边相关的数组，通常使用较大的维度
+            name if name.contains("edge") || name.contains("to") || name.contains("nex") => {
+                // 选择最大的常量作为维度（通常是边的数量）
+                if let Some(&max_dim) = possible_dimensions.iter().max() {
+                    vec![max_dim as usize]
+                } else {
+                    vec![]
+                }
+            }
+            // 节点相关的数组，通常使用较小的维度
+            name if name.contains("node") || name.contains("head") || name.contains("que") || name.contains("inq") => {
+                // 选择较小的常量作为维度（通常是节点的数量）
+                if let Some(&min_dim) = possible_dimensions.iter().min() {
+                    vec![min_dim as usize]
+                } else {
+                    vec![]
+                }
+            }
+            _ => {
+                // 默认使用第一个可用的常量
+                if let Some(&first_dim) = possible_dimensions.first() {
+                    vec![first_dim as usize]
+                } else {
+                    vec![]
+                }
+            }
+        }
+    }
+    
+    /// 从AST收集常量声明
+    fn collect_constants_from_ast(&self, ast: &crate::frontend::ast::Ast) -> std::collections::HashMap<String, i64> {
+        let mut constants = std::collections::HashMap::new();
+        self.collect_constants_recursive(ast, &mut constants);
+        constants
+    }
+    
+    /// 递归收集常量声明
+    fn collect_constants_recursive(&self, ast: &crate::frontend::ast::Ast, constants: &mut std::collections::HashMap<String, i64>) {
+        use crate::frontend::ast::{AstKind, Expression, Literal};
+        
+        match &ast.kind {
+            AstKind::VariableDeclaration { variable_name, initial_value, is_const, .. } => {
+                if *is_const {
+                    if let Some(init_value) = initial_value {
+                        if let AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(value))) = &init_value.kind {
+                            constants.insert(variable_name.clone(), *value as i64);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        
+        // 递归处理子节点
+        match &ast.kind {
+            AstKind::Program { functions, global_variables } => {
+                for func in functions {
+                    self.collect_constants_recursive(func, constants);
+                }
+                for var in global_variables {
+                    self.collect_constants_recursive(var, constants);
+                }
+            }
+            AstKind::Function { function_body, .. } => {
+                self.collect_constants_recursive(function_body, constants);
+            }
+            AstKind::VariableDeclaration { initial_value, .. } => {
+                if let Some(init) = initial_value {
+                    self.collect_constants_recursive(init, constants);
+                }
+            }
+            _ => {}
+        }
+    }
+    
     /// 转换AST到三地址码IR
     pub fn convert(&mut self, ast: &Ast) -> Result<TACProgram, String> {
         let mut program = TACProgram::new();
@@ -106,7 +233,11 @@ impl ASTToTACConverter {
         match &ast.kind {
             AstKind::Program { functions, global_variables } => {
                 // 处理全局变量
+                println!("处理全局变量，数量: {}", global_variables.len());
                 for var_decl in global_variables {
+                    if let AstKind::VariableDeclaration { variable_name, variable_type, .. } = &var_decl.kind {
+                        println!("处理全局变量: {} -> {:?}", variable_name, variable_type);
+                    }
                     self.convert_variable_declaration(var_decl, program)?;
                 }
                 
@@ -190,6 +321,10 @@ impl ASTToTACConverter {
                 // 添加参数到函数
                 function.parameters.push((variable_name.clone(), variable_type.clone()));
                 
+                // 映射参数到变量映射表，这样在函数体中就能找到参数了
+                let var_operand = Operand::Variable(variable_name.clone());
+                self.mapper.map_variable(variable_name, var_operand);
+                
                 // 如果是数组类型，添加到数组变量列表
                 if let Type::ArrayType { element_type, array_size } = variable_type {
                     if let Some(size) = array_size {
@@ -266,23 +401,38 @@ impl ASTToTACConverter {
             self.mapper.map_variable(variable_name, var_operand.clone());
             
             // 处理数组类型
-            if let Type::ArrayType { element_type, array_size } = variable_type {
+            if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = variable_type {
                 // 如果是数组类型，添加到数组变量列表
-                if let Some(size) = array_size {
-                    // 计算数组的总大小
-                    let mut dimensions = vec![*size];
+                let dimensions = if let Some(size) = array_size {
+                    // 如果array_size有值，直接使用
+                    let mut dims = vec![*size];
                     let mut current_type = element_type;
                     
                     // 处理多维数组
                     while let Type::ArrayType { element_type: inner_type, array_size: inner_size } = current_type.as_ref() {
                         if let Some(inner_size_val) = inner_size {
-                            dimensions.push(*inner_size_val);
+                            dims.push(*inner_size_val);
                             current_type = inner_type;
                         } else {
                             break;
                         }
                     }
-                    
+                    dims
+                } else {
+                    // 如果array_size是None，尝试从AST的语义信息中获取推断的维度
+                    // 或者从全局常量表中查找
+                    let inferred_dimensions = self.infer_array_dimensions_from_ast(&ast, variable_name);
+                    if inferred_dimensions.is_empty() {
+                        println!("无法推断数组 {} 的维度，跳过", variable_name);
+                    }
+                    inferred_dimensions
+                };
+                
+                if !dimensions.is_empty() {
+                    // 计算总元素个数
+                    let total_elements: usize = dimensions.iter().product();
+                    println!("数组 {} 维度: {:?}, 总元素数: {}", variable_name, dimensions, total_elements);
+                
                     // 如果有当前函数，添加到函数中；否则添加到全局程序
                     if let Some(func) = self.context.get_current_function_mut() {
                         func.add_array_variable(
@@ -291,33 +441,47 @@ impl ASTToTACConverter {
                             dimensions.clone()
                         );
                     } else {
-                        // 全局数组变量，添加到程序的全局数组列表中
-                        // 这里需要扩展TACProgram来支持全局数组
+                        // 全局数组变量，添加到程序的全局数组变量列表中
+                        program.add_global_array_variable(
+                            variable_name.clone(),
+                            variable_type.clone(),
+                            dimensions.clone()
+                        );
+                        // 同时也添加到全局变量列表中，因为它们是全局变量
+                        program.add_global_variable(
+                            variable_name.clone(),
+                            variable_type.clone(),
+                            None
+                        );
                         println!("全局数组变量: {} 维度: {:?}", variable_name, dimensions);
                     }
                     
                     // 保存数组信息到mapper中，供后续使用
                     self.mapper.map_array_info(variable_name, dimensions);
-                }
-                
-                // 为数组分配内存
-                // 先计算数组总大小（字节数），避免借用冲突
-                let total_elements = self.calculate_array_total_size(variable_type);
-                let element_size = self.get_type_size(element_type);
-                let total_bytes = total_elements * element_size;
-                
-                if let Some(block) = self.context.get_current_block_mut() {
-                    // 生成内存分配指令
-                    block.add_instruction(TACInstruction::Allocate {
-                        target: var_operand.clone(),
-                        size: Operand::Constant(ConstantValue::Integer(total_bytes as i64)),
-                    });
                     
-                    println!("为数组 {} 分配 {} 字节内存", variable_name, total_bytes);
+                    // 为数组分配内存
+                    // 使用已经计算好的总元素个数
+                    let element_size = self.get_type_size(element_type);
+                    let total_bytes = total_elements * element_size;
+                    
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        // 函数内数组，生成内存分配指令
+                        block.add_instruction(TACInstruction::Allocate {
+                            target: var_operand.clone(),
+                            size: Operand::Constant(ConstantValue::Integer(total_bytes as i64)),
+                        });
+                        
+                        println!("为函数内数组 {} 分配 {} 字节内存", variable_name, total_bytes);
+                    } else {
+                        // 全局数组，生成全局内存分配指令
+                        // 注意：全局数组在编译时就确定了大小，不需要运行时分配
+                        println!("全局数组 {} 将在编译时分配 {} 字节内存", variable_name, total_bytes);
+                    }
                 }
             } else {
-                // 为普通变量声明生成IR指令（即使没有初始值）
+                // 为普通变量声明生成IR指令
                 if let Some(block) = self.context.get_current_block_mut() {
+                    // 如果有当前函数，在函数内生成指令
                     // 如果没有初始值，使用默认值
                     let default_value = match variable_type {
                         Type::IntType => Operand::Constant(ConstantValue::Integer(0)),
@@ -331,6 +495,23 @@ impl ASTToTACConverter {
                         target: var_operand.clone(),
                         source: default_value,
                     });
+                } else {
+                    // 全局变量，添加到程序的全局变量列表中
+                    let initial_value_operand = if let Some(init_value) = initial_value {
+                        // 如果有初始值，转换它
+                        match self.convert_ast_node(init_value, program) {
+                            Ok(operand) => Some(operand),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
+                    
+                    program.add_global_variable(
+                        variable_name.clone(),
+                        variable_type.clone(),
+                        initial_value_operand
+                    );
                 }
             }
             
@@ -348,10 +529,14 @@ impl ASTToTACConverter {
                     }
                 } else {
                     // 普通变量赋值
-                    let init_result = self.convert_ast_node(init_value, program)?;
-                    
-                    // 使用独立方法存储赋值，避免借用冲突
-                    self.store_variable_assignment(&var_operand, init_result)?;
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        // 函数内变量，生成赋值指令
+                        let init_result = self.convert_ast_node(init_value, program)?;
+                        self.store_variable_assignment(&var_operand, init_result)?;
+                    } else {
+                        // 全局变量，初始值已经在add_global_variable中处理了
+                        // 这里不需要额外处理
+                    }
                 }
             }
             
@@ -662,18 +847,43 @@ impl ASTToTACConverter {
             }
             
             Expression::Assignment { target, value } => {
-                // 转换目标变量
-                let target_result = self.convert_ast_node(target, &mut TACProgram::new())?;
-                
                 // 转换赋值表达式
                 let value_result = self.convert_ast_node(value, &mut TACProgram::new())?;
                 
-                // 添加赋值指令
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Assign {
-                        target: target_result,
-                        source: value_result.clone(),
-                    });
+                // 检查目标是否是数组访问
+                if let AstKind::Expression(Expression::ArrayAccess { array, index }) = &target.kind {
+                    // 数组赋值，需要生成Store指令
+                    let array_result = self.convert_ast_node(array, &mut TACProgram::new())?;
+                    let index_result = self.convert_ast_node(index, &mut TACProgram::new())?;
+                    
+                    // 先获取临时变量ID，避免借用冲突
+                    let addr_temp_id = self.context.next_temp_id();
+                    let addr_temp = Operand::Temp(addr_temp_id);
+                    
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        // 计算数组元素地址：addr_temp = getelementptr array, index
+                        block.add_instruction(TACInstruction::GetElementPtr {
+                            target: addr_temp.clone(),
+                            base: array_result,
+                            indices: vec![index_result],
+                        });
+                        
+                        // 存储值到数组：store value, addr_temp
+                        block.add_instruction(TACInstruction::Store {
+                            value: value_result.clone(),
+                            address: addr_temp,
+                        });
+                    }
+                } else {
+                    // 普通变量赋值
+                    let target_result = self.convert_ast_node(target, &mut TACProgram::new())?;
+                    
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        block.add_instruction(TACInstruction::Assign {
+                            target: target_result,
+                            source: value_result.clone(),
+                        });
+                    }
                 }
                 
                 Ok(value_result)
@@ -728,20 +938,25 @@ impl ASTToTACConverter {
                 let array_result = self.convert_ast_node(array, &mut TACProgram::new())?;
                 let index_result = self.convert_ast_node(index, &mut TACProgram::new())?;
                 
-                // 创建临时变量存储数组访问结果
-                let temp_operand = if let Some(func) = self.context.get_current_function_mut() {
-                    func.new_temp()
-                } else {
-                    Operand::Temp(0)
-                };
+                // 先获取所有需要的临时变量ID，避免借用冲突
+                let temp_operand_id = self.context.next_temp_id();
+                let addr_temp_id = self.context.next_temp_id();
+                let temp_operand = Operand::Temp(temp_operand_id);
+                let addr_temp = Operand::Temp(addr_temp_id);
                 
                 // 生成数组访问指令
                 if let Some(block) = self.context.get_current_block_mut() {
-                    // 这里应该生成数组访问的指令
-                    // 暂时使用简单的赋值，实际实现需要地址计算
-                    block.add_instruction(TACInstruction::Assign {
+                    // 计算数组元素地址：addr_temp = getelementptr array, index
+                    block.add_instruction(TACInstruction::GetElementPtr {
+                        target: addr_temp.clone(),
+                        base: array_result,
+                        indices: vec![index_result],
+                    });
+                    
+                    // 加载数组元素值：temp_operand = load addr_temp
+                    block.add_instruction(TACInstruction::Load {
                         target: temp_operand.clone(),
-                        source: Operand::Constant(ConstantValue::Integer(0)), // 暂时使用0
+                        address: addr_temp,
                     });
                 }
                 

@@ -413,7 +413,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        let ident: String = chars.into_iter().collect::<String>().to_lowercase();
+        let ident: String = chars.into_iter().collect::<String>();
 
         match ident.as_str() {
             "int" => Token::KeywordInt,

@@ -117,9 +117,6 @@ impl ExprChecker {
                 });
             }
         } else {
-            // 添加调试信息
-            println!("🔍 表达式检查时查找变量 '{}' 失败", name);
-            symbol_table.debug_check_variable(name);
             errors.push(SemanticError {
                 message: format!("未定义的变量：'{}'", name),
                 span: span.clone(),

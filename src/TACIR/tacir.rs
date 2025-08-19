@@ -449,6 +449,8 @@ impl fmt::Display for TACFunction {
 pub struct TACProgram {
     /// 全局变量
     pub global_variables: Vec<(String, Type, Option<Operand>)>,
+    /// 全局数组变量
+    pub global_array_variables: Vec<(String, Type, Vec<usize>)>,
     /// 函数列表
     pub functions: Vec<TACFunction>,
     /// 主函数ID
@@ -459,6 +461,7 @@ impl TACProgram {
     pub fn new() -> Self {
         Self {
             global_variables: Vec::new(),
+            global_array_variables: Vec::new(),
             functions: Vec::new(),
             main_function_id: None,
         }
@@ -491,6 +494,11 @@ impl TACProgram {
     pub fn add_global_variable(&mut self, name: String, var_type: Type, initial_value: Option<Operand>) {
         self.global_variables.push((name, var_type, initial_value));
     }
+    
+    /// 添加全局数组变量
+    pub fn add_global_array_variable(&mut self, name: String, array_type: Type, dimensions: Vec<usize>) {
+        self.global_array_variables.push((name, array_type, dimensions));
+    }
 }
 
 impl fmt::Display for TACProgram {
@@ -503,6 +511,10 @@ impl fmt::Display for TACProgram {
                 None => "None".to_string(),
             };
             writeln!(f, "  {}: {:?} = {}", name, var_type, initial_value_str)?;
+        }
+        writeln!(f, "Global Array Variables:")?;
+        for (name, array_type, dimensions) in &self.global_array_variables {
+            writeln!(f, "  {}: {:?} 维度: {:?}", name, array_type, dimensions)?;
         }
         writeln!(f, "Functions:")?;
         for (i, func) in self.functions.iter().enumerate() {

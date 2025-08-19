@@ -97,7 +97,23 @@ impl SemanticAnalyzer {
             vec![Type::IntType],
             Span::start_only(0, 0, 0, 0),
         );
+        // getch: () -> int (读取单个字符)
+        let _ = self.symbol_table.add_function(
+            "getch",
+            Type::IntType,
+            vec![],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // putch: (int) -> void (输出单个字符)
+        let _ = self.symbol_table.add_function(
+            "putch",
+            Type::VoidType,
+            vec![Type::IntType],
+            Span::start_only(0, 0, 0, 0),
+        );
     }
+    
+
     
     /// 分析AST，进行语义检查
     /// 
@@ -123,9 +139,6 @@ impl SemanticAnalyzer {
         // 第二遍：重建符号表并进行语义检查
         self.rebuild_symbol_table_and_check(ast);
         
-        // 注意：不退出函数作用域，保持局部变量在符号表中
-        // 这样后续的语义信息填充可以正确访问局部变量
-        
         // 如果有错误，返回错误列表；否则返回成功
         if self.errors.is_empty() {
             Ok(())
@@ -145,6 +158,7 @@ impl SemanticAnalyzer {
                     self.var_checker.collect_variable_declaration(
                         var_decl, 
                         &mut self.symbol_table, 
+                        &self.type_system,
                         &mut self.errors
                     );
                 }
@@ -175,34 +189,17 @@ impl SemanticAnalyzer {
     fn rebuild_symbol_table_and_check(&mut self, ast: &Ast) {
         match &ast.kind {
             AstKind::Program { functions, global_variables } => {
-                // 检查全局变量
-                for var_decl in global_variables {
-                    self.var_checker.check_variable_declaration(
-                        var_decl, 
-                        &mut self.symbol_table, 
-                        &mut self.type_system,
-                        &mut self.errors
-                    );
+                // 处理全局变量
+                for var in global_variables {
+                    self.var_checker.check_variable_declaration(var, &mut self.symbol_table, &mut self.type_system, &mut self.errors);
                 }
                 
-                // 检查函数并重建函数内的符号表
-                for func_decl in functions {
-                    self.func_checker.check_function_declaration(
-                        func_decl, 
-                        &mut self.symbol_table, 
-                        &mut self.type_system,
-                        &mut self.errors
-                    );
+                // 处理函数
+                for func in functions {
+                    self.func_checker.check_function_declaration(func, &mut self.symbol_table, &mut self.type_system, &mut self.errors);
                 }
             }
-            _ => {
-                let error = SemanticError {
-                    message: "期望程序根节点".to_string(),
-                    span: ast.span.clone(),
-                    error_type: SemanticErrorType::ScopeError,
-                };
-                self.errors.push(error);
-            }
+            _ => {}
         }
     }
     
@@ -231,3 +228,5 @@ impl SemanticAnalyzer {
         &self.symbol_table
     }
 }
+
+

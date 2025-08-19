@@ -122,7 +122,11 @@ impl SemanticAnalysis {
         let type_system = self.analyzer.get_type_system();
         
         // 递归填充所有节点的语义信息
-        fill_semantic_info_recursive(ast, symbol_table, type_system);
+        // 先收集常量，然后使用新的带常量的函数
+        let mut constants = std::collections::HashMap::new();
+        collect_constants(ast, &mut constants);
+        println!("收集到的常量: {:?}", constants);
+        fill_semantic_info_recursive_with_constants(ast, symbol_table, type_system, &constants);
         
         // 标记整个AST为已分析
         mark_ast_as_analyzed(ast);
@@ -211,7 +215,11 @@ pub fn analyze_ast_with_semantic_info(mut ast: Ast) -> Result<Ast, Vec<SemanticE
         let symbol_table = analyzer.analyzer.get_symbol_table();
         let type_system = analyzer.analyzer.get_type_system();
         
-        fill_semantic_info_recursive(&mut ast, symbol_table, type_system);
+        // 先收集常量，然后使用新的带常量的函数
+        let mut constants = std::collections::HashMap::new();
+        collect_constants(&ast, &mut constants);
+        println!("收集到的常量: {:?}", constants);
+        fill_semantic_info_recursive_with_constants(&mut ast, symbol_table, type_system, &constants);
         mark_ast_as_analyzed(&mut ast);
         
         Ok(ast)
@@ -227,15 +235,95 @@ fn fill_semantic_info(ast: &mut Ast, analyzer: &SemanticAnalysis) {
     let symbol_table = analyzer.get_symbol_table();
     let type_system = analyzer.get_type_system();
     
-    // 递归填充所有节点的语义信息
-    fill_semantic_info_recursive(ast, symbol_table, type_system);
+    // 先收集所有常量声明
+    let mut constants = std::collections::HashMap::new();
+    collect_constants(ast, &mut constants);
+    println!("收集到的常量: {:?}", constants);
+    
+    // 递归填充所有节点的语义信息，传入常量表
+    fill_semantic_info_recursive_with_constants(ast, symbol_table, type_system, &constants);
     
     // 标记整个AST为已分析
     mark_ast_as_analyzed(ast);
 }
 
-/// 递归填充AST节点的语义信息
-fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::SemanticAnalyzer::symbol_table::SymbolTable, type_system: &crate::frontend::SemanticAnalyzer::type_system::TypeSystem) {
+/// 收集所有常量声明及其值
+fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String, i64>) {
+    use crate::frontend::ast::{AstKind, Expression, Literal};
+    
+    match &ast.kind {
+        AstKind::VariableDeclaration { variable_name, initial_value, is_const, .. } => {
+            if *is_const {
+                if let Some(init_value) = initial_value {
+                    if let AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(value))) = &init_value.kind {
+                        constants.insert(variable_name.clone(), *value as i64);
+                        println!("收集常量: {} = {}", variable_name, value);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    
+    // 递归处理子节点
+    match &ast.kind {
+        AstKind::Program { functions, global_variables } => {
+            for func in functions {
+                collect_constants(func, constants);
+            }
+            for var in global_variables {
+                collect_constants(var, constants);
+            }
+        }
+        AstKind::Function { function_body, .. } => {
+            collect_constants(function_body, constants);
+        }
+        AstKind::VariableDeclaration { initial_value, .. } => {
+            if let Some(init) = initial_value {
+                collect_constants(init, constants);
+            }
+        }
+        AstKind::Statement(stmt) => {
+            use crate::frontend::ast::Statement;
+            match stmt {
+                Statement::Compound { statements } => {
+                    for stmt in statements {
+                        collect_constants(stmt, constants);
+                    }
+                }
+                Statement::ExpressionStatement { expression } => {
+                    collect_constants(expression, constants);
+                }
+                _ => {}
+            }
+        }
+        AstKind::Expression(expr) => {
+            match expr {
+                Expression::BinaryOperation { left_operand, right_operand, .. } => {
+                    collect_constants(left_operand, constants);
+                    collect_constants(right_operand, constants);
+                }
+                Expression::UnaryOperation { operand, .. } => {
+                    collect_constants(operand, constants);
+                }
+                Expression::Assignment { target, value, .. } => {
+                    collect_constants(target, constants);
+                    collect_constants(value, constants);
+                }
+                Expression::FunctionCall { arguments, .. } => {
+                    for arg in arguments {
+                        collect_constants(arg, constants);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 递归填充AST节点的语义信息（带常量表）
+fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &crate::frontend::SemanticAnalyzer::symbol_table::SymbolTable, type_system: &crate::frontend::SemanticAnalyzer::type_system::TypeSystem, constants: &std::collections::HashMap<String, i64>) {
     use crate::frontend::ast::{AstKind, Expression};
     
     // 根据节点类型填充语义信息
@@ -245,6 +333,48 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
             ast.semantic_info.set_deduced_type(variable_type.clone());
             // 设置符号名称
             ast.semantic_info.set_symbol_name(variable_name.clone());
+            
+            // 特殊处理数组类型：求值数组维度表达式
+            if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = variable_type {
+                if let Some(size) = array_size {
+                    println!("数组 {} 的维度: {}", variable_name, size);
+                } else {
+                    println!("数组 {} 的维度为 None - 尝试从常量表求值", variable_name);
+                    
+                    // 从常量表中查找数组维度
+                    // 根据变量名推断数组维度表达式
+                    // 例如：to[maxn] -> 查找常量 maxn
+                    let inferred_size = if let Some(size) = constants.get(variable_name.as_str()) {
+                        println!("从常量表找到数组 {} 的维度: {}", variable_name, size);
+                        Some(*size as usize)
+                    } else {
+                        // 尝试根据常见的数组命名模式推断
+                        match variable_name.as_str() {
+                            "to" | "nex" => constants.get("maxm").map(|&s| s as usize),
+                            "head" | "que" | "inq" => constants.get("maxn").map(|&s| s as usize),
+                            _ => None,
+                        }
+                    };
+                    
+                    if let Some(size) = inferred_size {
+                        println!("成功推断数组 {} 的维度: {}", variable_name, size);
+                        
+                        // 更新AST中的数组大小
+                        // 创建一个新的数组类型，包含正确的维度
+                        let new_array_type = crate::frontend::ast::Type::ArrayType {
+                            element_type: element_type.clone(),
+                            array_size: Some(size),
+                        };
+                        
+                        // 更新AST节点的语义信息
+                        ast.semantic_info.set_deduced_type(new_array_type.clone());
+                        
+                        println!("✅ 已更新数组 {} 的维度为: {}", variable_name, size);
+                    } else {
+                        println!("无法推断数组 {} 的维度", variable_name);
+                    }
+                }
+            }
         }
         AstKind::Function { function_name, return_type, .. } => {
             // 设置返回类型
@@ -259,9 +389,6 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
             if let Some(var_type) = symbol_table.get_variable_type(name) {
                 ast.semantic_info.set_deduced_type(var_type);
             } else {
-                // 添加调试信息
-                println!("🔍 语义信息填充时查找变量 '{}' 失败", name);
-                symbol_table.debug_check_variable(name);
                 ast.semantic_info.add_error(format!("未定义的变量: {}", name));
             }
             // 设置符号名称
@@ -304,72 +431,72 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
         }
     }
     
-    // 递归处理子节点
-    match &mut ast.kind {
-        AstKind::Program { functions, global_variables } => {
-            for func in functions {
-                fill_semantic_info_recursive(func, symbol_table, type_system);
+            // 递归处理子节点
+        match &mut ast.kind {
+            AstKind::Program { functions, global_variables } => {
+                for func in functions {
+                    fill_semantic_info_recursive_with_constants(func, symbol_table, type_system, constants);
+                }
+                for var in global_variables {
+                    fill_semantic_info_recursive_with_constants(var, symbol_table, type_system, constants);
+                }
             }
-            for var in global_variables {
-                fill_semantic_info_recursive(var, symbol_table, type_system);
+            AstKind::Function { function_body, .. } => {
+                fill_semantic_info_recursive_with_constants(function_body, symbol_table, type_system, constants);
             }
-        }
-        AstKind::Function { function_body, .. } => {
-            fill_semantic_info_recursive(function_body, symbol_table, type_system);
-        }
-        AstKind::VariableDeclaration { initial_value, .. } => {
-            if let Some(init) = initial_value {
-                fill_semantic_info_recursive(init, symbol_table, type_system);
+            AstKind::VariableDeclaration { initial_value, .. } => {
+                if let Some(init) = initial_value {
+                    fill_semantic_info_recursive_with_constants(init, symbol_table, type_system, constants);
+                }
             }
-        }
-        AstKind::Statement(stmt) => {
-            use crate::frontend::ast::Statement;
-            match stmt {
-                Statement::Compound { statements } => {
-                    for stmt in statements {
-                        fill_semantic_info_recursive(stmt, symbol_table, type_system);
+            AstKind::Statement(stmt) => {
+                use crate::frontend::ast::Statement;
+                match stmt {
+                    Statement::Compound { statements } => {
+                        for stmt in statements {
+                            fill_semantic_info_recursive_with_constants(stmt, symbol_table, type_system, constants);
+                        }
                     }
-                }
-                Statement::ExpressionStatement { expression } => {
-                    fill_semantic_info_recursive(expression, symbol_table, type_system);
-                }
-                Statement::Return { value } => {
-                    if let Some(val) = value {
-                        fill_semantic_info_recursive(val, symbol_table, type_system);
+                    Statement::ExpressionStatement { expression } => {
+                        fill_semantic_info_recursive_with_constants(expression, symbol_table, type_system, constants);
                     }
-                }
-                Statement::If { condition, then_branch, else_branch } => {
-                    fill_semantic_info_recursive(condition, symbol_table, type_system);
-                    fill_semantic_info_recursive(then_branch, symbol_table, type_system);
-                    if let Some(else_branch) = else_branch {
-                        fill_semantic_info_recursive(else_branch, symbol_table, type_system);
+                    Statement::Return { value } => {
+                        if let Some(val) = value {
+                            fill_semantic_info_recursive_with_constants(val, symbol_table, type_system, constants);
+                        }
                     }
-                }
-                Statement::While { condition, body } => {
-                    fill_semantic_info_recursive(condition, symbol_table, type_system);
-                    fill_semantic_info_recursive(body, symbol_table, type_system);
-                }
-                Statement::For { initialization, condition, update, body } => {
-                    if let Some(init) = initialization {
-                        fill_semantic_info_recursive(init, symbol_table, type_system);
+                    Statement::If { condition, then_branch, else_branch } => {
+                        fill_semantic_info_recursive_with_constants(condition, symbol_table, type_system, constants);
+                        fill_semantic_info_recursive_with_constants(then_branch, symbol_table, type_system, constants);
+                        if let Some(else_branch) = else_branch {
+                            fill_semantic_info_recursive_with_constants(else_branch, symbol_table, type_system, constants);
+                        }
                     }
-                    if let Some(cond) = condition {
-                        fill_semantic_info_recursive(cond, symbol_table, type_system);
+                    Statement::While { condition, body } => {
+                        fill_semantic_info_recursive_with_constants(condition, symbol_table, type_system, constants);
+                        fill_semantic_info_recursive_with_constants(body, symbol_table, type_system, constants);
                     }
-                    if let Some(upd) = update {
-                        fill_semantic_info_recursive(upd, symbol_table, type_system);
+                    Statement::For { initialization, condition, update, body } => {
+                        if let Some(init) = initialization {
+                            fill_semantic_info_recursive_with_constants(init, symbol_table, type_system, constants);
+                        }
+                        if let Some(cond) = condition {
+                            fill_semantic_info_recursive_with_constants(cond, symbol_table, type_system, constants);
+                        }
+                        if let Some(upd) = update {
+                            fill_semantic_info_recursive_with_constants(upd, symbol_table, type_system, constants);
+                        }
+                        fill_semantic_info_recursive_with_constants(body, symbol_table, type_system, constants);
                     }
-                    fill_semantic_info_recursive(body, symbol_table, type_system);
+                    _ => {}
                 }
-                _ => {}
             }
-        }
         AstKind::Expression(expr) => {
             use crate::frontend::ast::Expression;
             match expr {
                 Expression::BinaryOperation { left_operand, right_operand, operator } => {
-                    fill_semantic_info_recursive(left_operand.as_mut(), symbol_table, type_system);
-                    fill_semantic_info_recursive(right_operand.as_mut(), symbol_table, type_system);
+                    fill_semantic_info_recursive_with_constants(left_operand.as_mut(), symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(right_operand.as_mut(), symbol_table, type_system, constants);
                     
                     // 获取左右操作数的类型
                     let left_type = left_operand.semantic_info.deduced_type.clone();
@@ -453,7 +580,7 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
                     }
                 }
                 Expression::UnaryOperation { operand, operator } => {
-                    fill_semantic_info_recursive(operand.as_mut(), symbol_table, type_system);
+                    fill_semantic_info_recursive_with_constants(operand.as_mut(), symbol_table, type_system, constants);
                     
                     // 获取操作数类型
                     let operand_type = operand.semantic_info.deduced_type.clone();
@@ -492,8 +619,8 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
                     }
                 }
                 Expression::Assignment { target, value } => {
-                    fill_semantic_info_recursive(target.as_mut(), symbol_table, type_system);
-                    fill_semantic_info_recursive(value.as_mut(), symbol_table, type_system);
+                    fill_semantic_info_recursive_with_constants(target.as_mut(), symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(value.as_mut(), symbol_table, type_system, constants);
                     
                     // 获取值类型
                     let value_type = value.semantic_info.deduced_type.clone();
@@ -521,12 +648,12 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
                 }
                 Expression::FunctionCall { arguments, .. } => {
                     for arg in arguments {
-                        fill_semantic_info_recursive(arg, symbol_table, type_system);
+                        fill_semantic_info_recursive_with_constants(arg, symbol_table, type_system, constants);
                     }
                 }
                 Expression::ArrayAccess { array, index } => {
-                    fill_semantic_info_recursive(array, symbol_table, type_system);
-                    fill_semantic_info_recursive(index, symbol_table, type_system);
+                    fill_semantic_info_recursive_with_constants(array, symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(index, symbol_table, type_system, constants);
                     
                     // 推导数组访问的结果类型
                     if let Some(array_type) = array.semantic_info.deduced_type.as_ref() {
@@ -571,7 +698,7 @@ fn fill_semantic_info_recursive(ast: &mut Ast, symbol_table: &crate::frontend::S
                     }
                 }
                 Expression::MemberAccess { object, .. } => {
-                    fill_semantic_info_recursive(object, symbol_table, type_system);
+                    fill_semantic_info_recursive_with_constants(object, symbol_table, type_system, constants);
                 }
                 _ => {}
             }

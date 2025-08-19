@@ -383,30 +383,4 @@ impl SymbolTable {
         None
     }
     
-    /// 打印符号表（调试用）
-    /// 
-    /// 按照clang设计理念：提供详细的调试信息
-    pub fn print_symbol_table(&self) {
-        println!("=== 符号表 ===");
-        for (i, scope) in self.scopes.iter().enumerate() {
-            println!("作用域 {}: {}", i, scope.name);
-            for (name, symbol) in &scope.symbols {
-                println!("  {}: {:?} ({:?})", name, symbol.data_type, symbol.kind);
-            }
-        }
-        println!("当前作用域: {}", self.get_current_scope_name());
-        println!("作用域深度: {}", self.get_scope_depth());
-    }
-    
-    /// 调试方法：检查变量是否存在
-    pub fn debug_check_variable(&self, name: &str) -> bool {
-        if let Some(symbol) = self.lookup_symbol(name) {
-            println!("✅ 找到变量 '{}': {:?}", name, symbol.data_type);
-            true
-        } else {
-            println!("❌ 未找到变量 '{}'", name);
-            self.print_symbol_table();
-            false
-        }
-    }
 }
