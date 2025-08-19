@@ -475,8 +475,8 @@ impl TypeSystem {
             Type::ArrayType { element_type, array_size } => {
                 let element_size = self.get_type_size(element_type);
                 match array_size {
-                    Some(size) => element_size * size,
-                    None => element_size, // 未知大小的数组
+                    crate::frontend::ast::ArraySize::Fixed(size) => element_size * size,
+                    _ => element_size, // 未知大小或常量的数组
                 }
             }
             Type::PointerType { .. } => 8, // 64位指针

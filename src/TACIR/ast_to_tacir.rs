@@ -87,130 +87,26 @@ impl ASTToTACConverter {
     }
     
     /// 从AST推断数组维度
-    /// 尝试从AST的语义信息或全局常量声明中推断数组维度
-    fn infer_array_dimensions_from_ast(&self, ast: &crate::frontend::ast::Ast, variable_name: &str) -> Vec<usize> {
-        // 尝试从AST的语义信息中获取推断的数组类型
+    /// 仅依赖语义分析阶段填充的 deduced_type，不做变量名启发式
+    fn infer_array_dimensions_from_ast(&self, ast: &crate::frontend::ast::Ast, _variable_name: &str) -> Vec<usize> {
         if let Some(deduced_type) = &ast.semantic_info.deduced_type {
-            if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = deduced_type {
-                if let Some(size) = array_size {
-                    return vec![*size];
-                }
-            }
-        }
-        
-        // 如果语义信息中没有，尝试从全局常量声明中推断
-        // 这里我们需要遍历AST查找常量声明
-        self.infer_array_dimensions_from_constants(ast, variable_name)
-    }
-    
-    /// 从常量声明推断数组维度
-    fn infer_array_dimensions_from_constants(&self, ast: &crate::frontend::ast::Ast, variable_name: &str) -> Vec<usize> {
-        // 尝试从AST中查找常量声明
-        let constants = self.collect_constants_from_ast(ast);
-        
-        // 尝试从AST的语义信息中获取推断的数组类型
-        // 如果语义分析阶段已经推断出了数组维度，直接使用
-        if let Some(deduced_type) = &ast.semantic_info.deduced_type {
-            if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = deduced_type {
-                if let Some(size) = array_size {
-                    return vec![*size];
-                }
-            }
-        }
-        
-        // 如果语义信息中没有，尝试启发式推断
-        // 这里我们基于变量名的语义特征，但不依赖特定的常量名
-        self.infer_dimensions_by_semantics(variable_name, &constants)
-    }
-    
-    /// 基于语义特征推断数组维度
-    fn infer_dimensions_by_semantics(&self, variable_name: &str, constants: &std::collections::HashMap<String, i64>) -> Vec<usize> {
-        // 分析变量名的语义特征，寻找可能的维度常量
-        // 这是一个启发式方法，基于常见的命名约定
-        
-        // 寻找可能的维度常量
-        let possible_dimensions: Vec<i64> = constants.values().cloned().collect();
-        
-        if possible_dimensions.is_empty() {
-            return vec![];
-        }
-        
-        // 根据变量名的语义特征选择最合适的维度
-        // 这里使用启发式规则，但所有值都来自AST，不硬编码
-        match variable_name {
-            // 边相关的数组，通常使用较大的维度
-            name if name.contains("edge") || name.contains("to") || name.contains("nex") => {
-                // 选择最大的常量作为维度（通常是边的数量）
-                if let Some(&max_dim) = possible_dimensions.iter().max() {
-                    vec![max_dim as usize]
-                } else {
-                    vec![]
-                }
-            }
-            // 节点相关的数组，通常使用较小的维度
-            name if name.contains("node") || name.contains("head") || name.contains("que") || name.contains("inq") => {
-                // 选择较小的常量作为维度（通常是节点的数量）
-                if let Some(&min_dim) = possible_dimensions.iter().min() {
-                    vec![min_dim as usize]
-                } else {
-                    vec![]
-                }
-            }
-            _ => {
-                // 默认使用第一个可用的常量
-                if let Some(&first_dim) = possible_dimensions.first() {
-                    vec![first_dim as usize]
-                } else {
-                    vec![]
-                }
-            }
-        }
-    }
-    
-    /// 从AST收集常量声明
-    fn collect_constants_from_ast(&self, ast: &crate::frontend::ast::Ast) -> std::collections::HashMap<String, i64> {
-        let mut constants = std::collections::HashMap::new();
-        self.collect_constants_recursive(ast, &mut constants);
-        constants
-    }
-    
-    /// 递归收集常量声明
-    fn collect_constants_recursive(&self, ast: &crate::frontend::ast::Ast, constants: &mut std::collections::HashMap<String, i64>) {
-        use crate::frontend::ast::{AstKind, Expression, Literal};
-        
-        match &ast.kind {
-            AstKind::VariableDeclaration { variable_name, initial_value, is_const, .. } => {
-                if *is_const {
-                    if let Some(init_value) = initial_value {
-                        if let AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(value))) = &init_value.kind {
-                            constants.insert(variable_name.clone(), *value as i64);
+            let mut dims: Vec<usize> = Vec::new();
+            let mut ty = deduced_type.clone();
+            loop {
+                match ty {
+                    crate::frontend::ast::Type::ArrayType { element_type, array_size } => {
+                        match array_size {
+                            crate::frontend::ast::ArraySize::Fixed(n) => dims.push(n),
+                            _ => return Vec::new(),
                         }
+                        ty = *element_type;
                     }
+                    _ => break,
                 }
             }
-            _ => {}
+            return dims;
         }
-        
-        // 递归处理子节点
-        match &ast.kind {
-            AstKind::Program { functions, global_variables } => {
-                for func in functions {
-                    self.collect_constants_recursive(func, constants);
-                }
-                for var in global_variables {
-                    self.collect_constants_recursive(var, constants);
-                }
-            }
-            AstKind::Function { function_body, .. } => {
-                self.collect_constants_recursive(function_body, constants);
-            }
-            AstKind::VariableDeclaration { initial_value, .. } => {
-                if let Some(init) = initial_value {
-                    self.collect_constants_recursive(init, constants);
-                }
-            }
-            _ => {}
-        }
+        Vec::new()
     }
     
     /// 转换AST到三地址码IR
@@ -327,15 +223,15 @@ impl ASTToTACConverter {
                 
                 // 如果是数组类型，添加到数组变量列表
                 if let Type::ArrayType { element_type, array_size } = variable_type {
-                    if let Some(size) = array_size {
+                    if let crate::frontend::ast::ArraySize::Fixed(size) = array_size {
                         // 计算数组的总大小
-                        let mut dimensions = vec![*size];
+                        let mut dimensions = vec![size];
                         let mut current_type = element_type;
                         
                         // 处理多维数组
                         while let Type::ArrayType { element_type: inner_type, array_size: inner_size } = current_type.as_ref() {
-                            if let Some(inner_size_val) = inner_size {
-                                dimensions.push(*inner_size_val);
+                            if let crate::frontend::ast::ArraySize::Fixed(inner_size_val) = inner_size {
+                                dimensions.push(inner_size_val);
                                 current_type = inner_type;
                             } else {
                                 break;
@@ -345,7 +241,7 @@ impl ASTToTACConverter {
                         function.add_array_variable(
                             variable_name.clone(),
                             variable_type.clone(),
-                            dimensions
+                            dimensions.into_iter().map(|&x| x).collect()
                         );
                     }
                 }
@@ -403,14 +299,14 @@ impl ASTToTACConverter {
             // 处理数组类型
             if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = variable_type {
                 // 如果是数组类型，添加到数组变量列表
-                let dimensions = if let Some(size) = array_size {
-                    // 如果array_size有值，直接使用
-                    let mut dims = vec![*size];
+                let dimensions = if let crate::frontend::ast::ArraySize::Fixed(size) = array_size {
+                    // 如果array_size是确定值，直接使用
+                    let mut dims: Vec<usize> = vec![*size];
                     let mut current_type = element_type;
                     
                     // 处理多维数组
                     while let Type::ArrayType { element_type: inner_type, array_size: inner_size } = current_type.as_ref() {
-                        if let Some(inner_size_val) = inner_size {
+                        if let crate::frontend::ast::ArraySize::Fixed(inner_size_val) = inner_size {
                             dims.push(*inner_size_val);
                             current_type = inner_type;
                         } else {
@@ -419,8 +315,7 @@ impl ASTToTACConverter {
                     }
                     dims
                 } else {
-                    // 如果array_size是None，尝试从AST的语义信息中获取推断的维度
-                    // 或者从全局常量表中查找
+                    // 如果array_size不是确定值，仅从AST语义信息获取维度（不做启发式）
                     let inferred_dimensions = self.infer_array_dimensions_from_ast(&ast, variable_name);
                     if inferred_dimensions.is_empty() {
                         println!("无法推断数组 {} 的维度，跳过", variable_name);
@@ -1311,10 +1206,10 @@ impl ASTToTACConverter {
         let mut current_type = array_type;
 
         while let Type::ArrayType { element_type, array_size: size } = current_type {
-            if let Some(size_val) = size {
+            if let crate::frontend::ast::ArraySize::Fixed(size_val) = size {
                 total_elements *= *size_val;
             } else {
-                // 如果数组大小未知，假设为1
+                // 如果数组大小未知或为常量标识符，暂按1处理
                 total_elements *= 1;
             }
             current_type = element_type;

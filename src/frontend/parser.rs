@@ -242,10 +242,7 @@ impl<'a> Parser<'a> {
                 // 一个小的帮助闭包：解析单个声明器（名称已给定，复用相同的基础类型）
                 let mut parse_one_declarator = |name: String, this: &mut Self| -> Result<Ast, Vec<ParseError>> {
                     // 解析数组维度（如果有）
-                    let declared_type = match this.parse_array_dimensions(decl_type.clone()) {
-                        Ok(t) => t,
-                        Err(errors) => return Err(errors),
-                    };
+                    let declared_type = this.parse_array_dimensions(decl_type.clone())?;
 
                     // 可选的初始值
                     let init = if let Token::Equal = this.current_token.token {
@@ -1449,7 +1446,7 @@ impl<'a> Parser<'a> {
     /// * `base_type` - 基础元素类型
     /// 
     /// # 返回
-    /// * `Ok(Type)` - 解析成功，返回数组类型或基础类型
+    /// * `Ok(Type)` - 解析成功，返回数组类型
     /// * `Err(Vec<ParseError>)` - 解析失败
     fn parse_array_dimensions(&mut self, base_type: Type) -> Result<Type, Vec<ParseError>> {
         let mut dimensions = Vec::new();
@@ -1458,13 +1455,13 @@ impl<'a> Parser<'a> {
         while let Token::LBracket = self.current_token.token {
             self.advance_to_next_token(); // 跳过 '['
             
-            // 解析数组大小：支持常量表达式（如 3+1），或空（[]）
+                        // 解析数组大小：支持常量表达式（如 3+1），或空（[]）
             let array_size = if matches!(self.current_token.token, Token::RBracket) {
-                None
+                crate::frontend::ast::ArraySize::Unspecified
             } else {
                 // 尝试解析一个表达式作为维度
                 let size_expr = self.parse_expression()?;
-                // 尝试常量折叠为整数或标识符
+                // 尝试常量折叠为整数或保存标识符
                 match &size_expr.kind {
                     AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(v))) => {
                         if *v <= 0 {
@@ -1474,17 +1471,19 @@ impl<'a> Parser<'a> {
                             };
                             return Err(vec![error]);
                         }
-                        Some(*v as usize)
+                        crate::frontend::ast::ArraySize::Fixed(*v as usize)
                     }
                     AstKind::Expression(Expression::Identifier { name }) => {
-                        // 支持常量标识符作为数组大小
-                        // 注意：这里我们暂时标记为 None，在语义分析阶段会处理
-                        // 因为解析器阶段无法确定常量的实际值
-                        None
+                        // 保存标识符，让语义分析处理
+                        crate::frontend::ast::ArraySize::Constant(name.to_string())
                     }
                     _ => {
-                        // 暂不支持其他类型的表达式作为数组大小
-                        None
+                        // 其他表达式暂时不支持
+                        let error = ParseError {
+                            message: "数组大小必须是整数字面量或常量标识符".to_string(),
+                            span: size_expr.span.clone(),
+                        };
+                        return Err(vec![error]);
                     }
                 }
             };
@@ -1504,10 +1503,10 @@ impl<'a> Parser<'a> {
         let mut current_type = base_type;
         
         // 从最后一个维度开始，向前构建
-        for &dimension_size in dimensions.iter().rev() {
+        for dimension_size in dimensions.iter().rev() {
             current_type = Type::ArrayType {
                 element_type: Box::new(current_type),
-                array_size: dimension_size,
+                array_size: dimension_size.clone(),
             };
         }
         

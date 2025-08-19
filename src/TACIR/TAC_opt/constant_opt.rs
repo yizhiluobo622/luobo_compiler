@@ -165,7 +165,7 @@ impl ConstantOptimizationPass {
                         _ => {}
                     }
                 }
-                // 如果右值是已知常量的变量或临时变量，也更新映射
+                // 如果右值可解析为常量，更新映射
                 else if let Some(constant_value) = self.resolve_operand_to_constant(source).unwrap_or(None) {
                     match target {
                         Operand::Variable(name) => {
@@ -176,6 +176,34 @@ impl ConstantOptimizationPass {
                         }
                         _ => {}
                     }
+                } else {
+                    // 不可解析为常量：杀掉原有的常量映射，避免陈旧常量污染
+                    match target {
+                        Operand::Variable(name) => {
+                            self.variable_constants.remove(name);
+                        }
+                        Operand::Temp(id) => {
+                            self.temp_constants.remove(id);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // 这些指令写入目标，但当前无法确定为常量：统一执行 kill
+            TACInstruction::BinaryOp { target, .. }
+            | TACInstruction::UnaryOp { target, .. }
+            | TACInstruction::FunctionCall { target, .. }
+            | TACInstruction::GetElementPtr { target, .. }
+            | TACInstruction::Load { target, .. }
+            | TACInstruction::Allocate { target, .. } => {
+                match target {
+                    Operand::Variable(name) => {
+                        self.variable_constants.remove(name);
+                    }
+                    Operand::Temp(id) => {
+                        self.temp_constants.remove(id);
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -202,6 +230,8 @@ impl ConstantOptimizationPass {
                     
                     Ok(Some(folded_instruction))
                 } else {
+                    // 至少有一个不是常量：如果这是条件相关的比较运算，避免错误地把控制流条件变成常量
+                    // 不做替换，保持原指令
                     Ok(None)
                 }
             }
@@ -222,6 +252,7 @@ impl ConstantOptimizationPass {
                     
                     Ok(Some(folded_instruction))
                 } else {
+                    // 不是常量：保持原指令
                     Ok(None)
                 }
             }

@@ -105,7 +105,7 @@ impl VarChecker {
                     self.check_nested_array_type(element_type, symbol_table, type_system, errors, &var_decl.span);
                     
                     // 检查数组大小
-                    if let Some(size) = array_size {
+                    if let crate::frontend::ast::ArraySize::Fixed(size) = array_size {
                         if *size == 0 {
                             errors.push(SemanticError {
                                 message: "数组大小不能为0".to_string(),
@@ -122,11 +122,18 @@ impl VarChecker {
                     }
                 }
                 
-                // 处理数组大小未知的情况（array_size: None）
+                // 处理数组大小未知的情况
                 if let Type::ArrayType { element_type, array_size } = variable_type {
-                    if array_size.is_none() {
-                        // 数组大小未知，这是正常的，因为解析器无法解析 const 常量作为数组大小
-                        // 在语义分析阶段，我们接受 array_size: None 的数组类型
+                    match array_size {
+                        crate::frontend::ast::ArraySize::Unspecified => {
+                            // 数组大小未指定，这是正常的
+                        }
+                        crate::frontend::ast::ArraySize::Constant(_) => {
+                            // 数组大小是常量，语义分析阶段会处理
+                        }
+                        crate::frontend::ast::ArraySize::Fixed(_) => {
+                            // 数组大小已确定
+                        }
                     }
                 }
                 
@@ -415,9 +422,9 @@ impl VarChecker {
             Type::ArrayType { element_type, array_size } => {
                 let inner = self.compute_total_array_elems(element_type);
                 match (array_size, inner) {
-                    (Some(n), Some(m)) => n.checked_mul(m),
-                    (Some(_), None) => None,
-                    (None, _) => None,
+                    (crate::frontend::ast::ArraySize::Fixed(n), Some(m)) => (*n).checked_mul(m),
+                    (crate::frontend::ast::ArraySize::Fixed(_), None) => None,
+                    (_, _) => None,
                 }
             }
             _ => Some(1),
@@ -467,7 +474,7 @@ impl VarChecker {
             }
 
             // 检查数组大小
-            if let Some(size) = array_size {
+            if let crate::frontend::ast::ArraySize::Fixed(size) = array_size {
                 if *size == 0 {
                     errors.push(SemanticError {
                         message: "数组大小不能为0".to_string(),

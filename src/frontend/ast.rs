@@ -246,6 +246,14 @@ pub enum UnaryOperator {
     Decrement,     // --
 }
 
+/// 数组大小类型
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ArraySize {
+    Unspecified,      // 无大小信息（如int a[]）
+    Constant(String), // 存常量名（如maxm）
+    Fixed(usize),     // 存固定值（如100）
+}
+
 /// 类型
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
@@ -256,7 +264,7 @@ pub enum Type {
     BoolType,
     ArrayType {
         element_type: Box<Type>,
-        array_size: Option<usize>,
+        array_size: ArraySize,
     },
     PointerType {
         target_type: Box<Type>,

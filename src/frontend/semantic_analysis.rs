@@ -336,42 +336,37 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
             
             // 特殊处理数组类型：求值数组维度表达式
             if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = variable_type {
-                if let Some(size) = array_size {
-                    println!("数组 {} 的维度: {}", variable_name, size);
-                } else {
-                    println!("数组 {} 的维度为 None - 尝试从常量表求值", variable_name);
-                    
-                    // 从常量表中查找数组维度
-                    // 根据变量名推断数组维度表达式
-                    // 例如：to[maxn] -> 查找常量 maxn
-                    let inferred_size = if let Some(size) = constants.get(variable_name.as_str()) {
-                        println!("从常量表找到数组 {} 的维度: {}", variable_name, size);
-                        Some(*size as usize)
-                    } else {
-                        // 尝试根据常见的数组命名模式推断
-                        match variable_name.as_str() {
-                            "to" | "nex" => constants.get("maxm").map(|&s| s as usize),
-                            "head" | "que" | "inq" => constants.get("maxn").map(|&s| s as usize),
-                            _ => None,
+                match array_size {
+                    crate::frontend::ast::ArraySize::Fixed(size) => {
+                        println!("数组 {} 的维度: {}", variable_name, size);
+                    }
+                    crate::frontend::ast::ArraySize::Constant(ident) => {
+                        println!("数组 {} 的维度为常量: {}", variable_name, ident);
+                        
+                        // 尝试从常量表推断数组维度
+                        if let Some(&size) = constants.get(ident.as_str()) {
+                            if size > 0 {
+                                println!("✅ 从常量表推断数组 {} 的维度为: {} (常量: {})", variable_name, size, ident);
+                                
+                                // 创建新的数组类型，包含正确的维度
+                                let new_array_type = crate::frontend::ast::Type::ArrayType {
+                                    element_type: element_type.clone(),
+                                    array_size: crate::frontend::ast::ArraySize::Fixed(size as usize),
+                                };
+                                
+                                // 更新AST节点的语义信息
+                                ast.semantic_info.set_deduced_type(new_array_type.clone());
+                                
+                                println!("✅ 已更新语义信息中数组 {} 的维度为: {}", variable_name, size);
+                            } else {
+                                println!("❌ 常量 {} 的值 {} 不能作为数组维度", ident, size);
+                            }
+                        } else {
+                            println!("❌ 无法从常量表找到常量: {}", ident);
                         }
-                    };
-                    
-                    if let Some(size) = inferred_size {
-                        println!("成功推断数组 {} 的维度: {}", variable_name, size);
-                        
-                        // 更新AST中的数组大小
-                        // 创建一个新的数组类型，包含正确的维度
-                        let new_array_type = crate::frontend::ast::Type::ArrayType {
-                            element_type: element_type.clone(),
-                            array_size: Some(size),
-                        };
-                        
-                        // 更新AST节点的语义信息
-                        ast.semantic_info.set_deduced_type(new_array_type.clone());
-                        
-                        println!("✅ 已更新数组 {} 的维度为: {}", variable_name, size);
-                    } else {
-                        println!("无法推断数组 {} 的维度", variable_name);
+                    }
+                    crate::frontend::ast::ArraySize::Unspecified => {
+                        println!("数组 {} 的维度未指定", variable_name);
                     }
                 }
             }
@@ -802,5 +797,72 @@ fn mark_ast_as_analyzed(ast: &mut Ast) {
             }
         }
         _ => {}
+    }
+    
+
+}
+
+/// 求值常量表达式
+/// 
+/// 支持字面量、标识符和基本的二元运算
+/// 
+/// # 参数
+/// * `expr` - 要求值的表达式AST
+/// * `constants` - 常量表
+/// 
+/// # 返回
+/// * `Ok(usize)` - 求值成功，返回结果
+/// * `Err(String)` - 求值失败，返回错误信息
+fn evaluate_constant_expression(
+    expr: &crate::frontend::ast::Ast, 
+    constants: &std::collections::HashMap<String, i64>
+) -> Result<usize, String> {
+    use crate::frontend::ast::{AstKind, Expression, Literal, BinaryOperator};
+    
+    match &expr.kind {
+        AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(i))) => {
+            if *i < 0 {
+                Err(format!("数组维度不能为负数: {}", i))
+            } else {
+                Ok(*i as usize)
+            }
+        }
+        AstKind::Expression(Expression::Identifier { name }) => {
+            // 从常量表查找常量值
+            if let Some(&value) = constants.get(name) {
+                if value < 0 {
+                    Err(format!("常量 {} 的值为负数: {}", name, value))
+                } else {
+                    Ok(value as usize)
+                }
+            } else {
+                Err(format!("未定义的常量: {}", name))
+            }
+        }
+        AstKind::Expression(Expression::BinaryOperation { operator, left_operand, right_operand }) => {
+            let left_val = evaluate_constant_expression(left_operand, constants)?;
+            let right_val = evaluate_constant_expression(right_operand, constants)?;
+            
+            match operator {
+                BinaryOperator::Add => Ok(left_val + right_val),
+                BinaryOperator::Subtract => {
+                    if left_val < right_val {
+                        Err(format!("减法结果不能为负数: {} - {}", left_val, right_val))
+                    } else {
+                        Ok(left_val - right_val)
+                    }
+                }
+                BinaryOperator::Multiply => Ok(left_val * right_val),
+                BinaryOperator::Divide => {
+                    if right_val == 0 {
+                        Err("除数不能为零".to_string())
+                    } else {
+                        Ok(left_val / right_val)
+                    }
+                }
+                _ => Err(format!("不支持的二元运算: {:?}", operator))
+            }
+        }
+        _ => Err(format!("不支持的表达式类型: {:?}", expr.kind))
     }
 }

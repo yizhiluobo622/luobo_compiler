@@ -532,7 +532,7 @@ impl ExprChecker {
                         }
                         
                         // 如果索引是常量且数组有已知大小，检查边界
-                        if let Some(array_size) = array_size {
+                        if let crate::frontend::ast::ArraySize::Fixed(array_size) = array_size {
                             if let Ok(constant_index) = self.try_evaluate_constant_index(index) {
                                 if constant_index < 0 {
                                     errors.push(SemanticError {

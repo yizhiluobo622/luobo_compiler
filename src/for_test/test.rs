@@ -24,6 +24,10 @@ pub mod tests {
         // Semantic Analysis
         let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
         
+        // 检查AST中的数组维度和索引表达式
+        println!("=== 检查AST中的数组信息 ===");
+        check_ast_array_dimensions(&annotated_ast);
+        
         // TAC IR转换
         println!("=== 开始TAC IR转换 ===");
         match TACIR::convert_ast_to_tac(&annotated_ast) {
