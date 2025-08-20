@@ -1,6 +1,7 @@
 use crate::frontend::ast::{Ast, AstKind, Expression, Statement, Literal, Type, BinaryOperator, UnaryOperator};
 use super::tacir::{TACProgram, TACFunction, BasicBlock, TACInstruction, Operand, ConstantValue, BinaryOperator as TACBinaryOp, UnaryOperator as TACUnaryOp};
 use super::node_mapping::NodeMapper;
+use std::collections::HashMap;
 
 /// 转换上下文，管理转换过程中的可变状态
 pub struct ConversionContext {
@@ -10,6 +11,10 @@ pub struct ConversionContext {
     pub current_block: Option<BasicBlock>,
     /// 基本块ID计数器
     pub block_counter: usize,
+    /// 标签到基本块的映射
+    pub label_to_block: HashMap<String, usize>,
+    /// 当前基本块的ID
+    pub current_block_id: usize,
 }
 
 impl ConversionContext {
@@ -18,6 +23,8 @@ impl ConversionContext {
             current_function: None,
             current_block: None,
             block_counter: 0,
+            label_to_block: HashMap::new(),
+            current_block_id: 0,
         }
     }
     
@@ -68,6 +75,26 @@ impl ConversionContext {
             0
         }
     }
+    
+    /// 注册标签到基本块的映射
+    pub fn register_label(&mut self, label: String, block_id: usize) {
+        self.label_to_block.insert(label, block_id);
+    }
+    
+    /// 获取标签对应的基本块ID
+    pub fn get_block_for_label(&self, label: &str) -> Option<usize> {
+        self.label_to_block.get(label).copied()
+    }
+    
+    /// 设置当前基本块ID
+    pub fn set_current_block_id(&mut self, block_id: usize) {
+        self.current_block_id = block_id;
+    }
+    
+    /// 获取当前基本块ID
+    pub fn get_current_block_id(&self) -> usize {
+        self.current_block_id
+    }
 }
 
 /// AST到三地址码IR转换器
@@ -84,6 +111,106 @@ impl ASTToTACConverter {
             mapper: NodeMapper::new(),
             context: ConversionContext::new(),
         }
+    }
+    
+    /// 创建新的基本块
+    fn create_new_block(&mut self) -> Result<BasicBlock, String> {
+        let block_id = self.context.next_block_id();
+        let mut new_block = BasicBlock::new(block_id);
+        
+        // 设置前驱和后继（暂时为空，后续填充）
+        new_block.predecessors = Vec::new();
+        new_block.successors = Vec::new();
+        
+        Ok(new_block)
+    }
+    
+    /// 结束当前基本块并添加到函数中
+    fn finalize_current_block(&mut self) -> Result<(), String> {
+        if let Some(block) = self.context.get_current_block().cloned() {
+            // 将当前块添加到函数中
+            if let Some(func) = self.context.get_current_function_mut() {
+                func.add_basic_block(block);
+            }
+        }
+        Ok(())
+    }
+    
+    /// 创建标签对应的基本块
+    fn create_block_for_label(&mut self, label_name: &str) -> Result<BasicBlock, String> {
+        // 检查标签是否已有对应的块
+        if let Some(block_id) = self.context.get_block_for_label(label_name) {
+            // 如果标签已存在，获取对应的块
+            if let Some(func) = self.context.get_current_function_mut() {
+                if let Some(existing_block) = func.get_basic_block(block_id) {
+                    return Ok(existing_block.clone());
+                }
+            }
+        }
+        
+        // 创建新块
+        let new_block = self.create_new_block()?;
+        let block_id = new_block.id;
+        
+        // 注册标签到块的映射
+        self.context.register_label(label_name.to_string(), block_id);
+        
+        Ok(new_block)
+    }
+    
+    /// 切换到标签对应的基本块
+    fn switch_to_label_block(&mut self, label_name: &str) -> Result<(), String> {
+        // 结束当前块
+        self.finalize_current_block()?;
+        
+        // 获取或创建标签对应的块
+        let label_block = self.create_block_for_label(label_name)?;
+        let block_id = label_block.id;
+        
+        // 设置为当前块
+        self.context.set_current_block(label_block);
+        self.context.set_current_block_id(block_id);
+        
+        Ok(())
+    }
+    
+    /// 建立基本块之间的控制流关系
+    fn establish_control_flow(&mut self, from_block_id: usize, to_label: &str) -> Result<(), String> {
+        // 获取目标块ID
+        let target_block_id = if let Some(block_id) = self.context.get_block_for_label(to_label) {
+            block_id
+        } else {
+            // 如果目标标签还没有对应的块，创建一个占位块
+            let placeholder_block = self.create_new_block()?;
+            let placeholder_id = placeholder_block.id;
+            self.context.register_label(to_label.to_string(), placeholder_id);
+            
+            // 将占位块添加到函数中
+            if let Some(func) = self.context.get_current_function_mut() {
+                func.add_basic_block(placeholder_block);
+            }
+            
+            placeholder_id
+        };
+        
+        // 建立前驱后继关系
+        if let Some(func) = self.context.get_current_function_mut() {
+            // 从块到目标块的后继关系
+            if let Some(from_block) = func.get_basic_block_mut(from_block_id) {
+                if !from_block.successors.contains(&target_block_id) {
+                    from_block.successors.push(target_block_id);
+                }
+            }
+            
+            // 目标块到从块的前驱关系
+            if let Some(target_block) = func.get_basic_block_mut(target_block_id) {
+                if !target_block.predecessors.contains(&from_block_id) {
+                    target_block.predecessors.push(from_block_id);
+                }
+            }
+        }
+        
+        Ok(())
     }
     
     /// 从AST推断数组维度
@@ -197,6 +324,9 @@ impl ASTToTACConverter {
             // 设置当前基本块 - 避免借用冲突
             self.setup_current_block_from_function()?;
             
+            // 设置当前基本块ID
+            self.context.set_current_block_id(0);
+            
             // 转换函数体
             self.convert_ast_node(function_body, program)?;
             
@@ -252,36 +382,63 @@ impl ASTToTACConverter {
     
     /// 最终化函数基本块，避免借用冲突
     fn finalize_function_blocks(&mut self, program: &mut TACProgram) -> Result<(), String> {
-        // 获取当前函数和基本块，避免同时借用
-        let mut function = None;
-        let current_block = self.context.get_current_block_mut().cloned();
+        // 首先同步当前基本块到函数中
+        self.sync_current_block_to_function()?;
         
-        // 先获取函数
-        if let Some(func) = self.context.get_current_function_mut() {
-            function = Some(func.clone());
-        }
-        
-        // 如果有当前基本块，更新到函数中
-        if let (Some(mut func), Some(block)) = (function, current_block) {
-            // 更新第一个基本块
-            if let Some(existing_block) = func.get_basic_block(0) {
-                let block_index = func.basic_blocks.iter().position(|b| b.id == 0).unwrap_or(0);
-                func.basic_blocks[block_index] = block;
+        // 获取当前函数
+        if let Some(mut func) = self.context.current_function.take() {
+            // 检查是否需要默认返回语句
+            let current_block_id = self.context.get_current_block_id();
+            if let Some(block) = func.get_basic_block_mut(current_block_id) {
+                // 确保基本块至少有一条指令
+                if block.instructions.is_empty() {
+                    // 添加一个空操作指令，确保基本块不为空
+                    let temp_id = self.context.next_temp_id();
+                    let temp = Operand::Temp(temp_id);
+                    block.add_instruction(TACInstruction::Assign {
+                        target: temp.clone(),
+                        source: Operand::Constant(ConstantValue::Integer(0)),
+                    });
+                }
+                
+                if !block.instructions.iter().any(|inst| matches!(inst, TACInstruction::Return { .. })) {
+                    block.add_instruction(TACInstruction::Return { value: None });
+                }
             }
             
-            // 检查是否需要默认返回语句
-            if let Some(block) = func.get_basic_block(0) {
-                if !block.instructions.iter().any(|inst| matches!(inst, TACInstruction::Return { .. })) {
-                    let mut updated_block = block.clone();
-                    updated_block.add_instruction(TACInstruction::Return { value: None });
-                    
-                    let block_index = func.basic_blocks.iter().position(|b| b.id == 0).unwrap_or(0);
-                    func.basic_blocks[block_index] = updated_block;
+            // 检查所有基本块，确保每个基本块都有指令
+            for block in func.basic_blocks.iter_mut() {
+                if block.instructions.is_empty() {
+                    // 添加一个空操作指令，确保基本块不为空
+                    let temp_id = self.context.next_temp_id();
+                    let temp = Operand::Temp(temp_id);
+                    block.add_instruction(TACInstruction::Assign {
+                        target: temp.clone(),
+                        source: Operand::Constant(ConstantValue::Integer(0)),
+                    });
                 }
             }
             
             // 将函数添加到程序
             program.add_function(func);
+        }
+        
+        Ok(())
+    }
+    
+    /// 同步当前基本块到函数中
+    fn sync_current_block_to_function(&mut self) -> Result<(), String> {
+        if let Some(current_block) = self.context.current_block.take() {
+            let current_block_id = self.context.current_block_id;
+            
+            if let Some(current_function) = self.context.current_function.as_mut() {
+                // 查找并更新现有基本块，或添加新基本块
+                if let Some(block_index) = current_function.basic_blocks.iter().position(|b| b.id == current_block_id) {
+                    current_function.basic_blocks[block_index] = current_block;
+                } else {
+                    current_function.add_basic_block(current_block);
+                }
+            }
         }
         
         Ok(())
@@ -513,6 +670,12 @@ impl ASTToTACConverter {
                     });
                 }
                 
+                // 建立控制流关系：当前块 -> then块
+                self.establish_control_flow(self.context.get_current_block_id(), &then_label)?;
+                
+                // 切换到then块
+                self.switch_to_label_block(&then_label)?;
+                
                 // 处理then分支
                 let then_result = self.convert_ast_node(then_branch, program)?;
                 
@@ -523,18 +686,29 @@ impl ASTToTACConverter {
                     });
                 }
                 
-                // 处理else分支（如果存在）
+                // 建立控制流关系：then块 -> end块
+                self.establish_control_flow(self.context.get_current_block_id(), &end_label)?;
+                
+                // 切换到else块（如果存在）
                 if let Some(else_branch) = else_branch {
+                    self.switch_to_label_block(&else_label)?;
+                    
+                    // 处理else分支
                     let else_result = self.convert_ast_node(else_branch, program)?;
-                    // 这里可以合并结果，暂时返回then的结果
+                    
+                    // 添加跳转到结束标签的指令
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        block.add_instruction(TACInstruction::Jump {
+                            label: end_label.clone(),
+                        });
+                    }
+                    
+                    // 建立控制流关系：else块 -> end块
+                    self.establish_control_flow(self.context.get_current_block_id(), &end_label)?;
                 }
                 
-                // 添加结束标签
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Label {
-                        name: end_label,
-                    });
-                }
+                // 切换到结束块
+                self.switch_to_label_block(&end_label)?;
                 
                 Ok(then_result)
             }
@@ -559,12 +733,8 @@ impl ASTToTACConverter {
                     "loop_end".to_string()
                 };
                 
-                // 添加循环开始标签
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Label {
-                        name: loop_start_label.clone(),
-                    });
-                }
+                // 切换到循环开始块
+                self.switch_to_label_block(&loop_start_label)?;
                 
                 // 转换循环条件
                 let condition_result = self.convert_ast_node(condition, program)?;
@@ -578,52 +748,64 @@ impl ASTToTACConverter {
                     });
                 }
                 
+                // 建立控制流关系：循环开始块 -> 循环体块 和 循环结束块
+                self.establish_control_flow(self.context.get_current_block_id(), &loop_body_label)?;
+                self.establish_control_flow(self.context.get_current_block_id(), &loop_end_label)?;
+                
+                // 切换到循环体块
+                self.switch_to_label_block(&loop_body_label)?;
+                
                 // 处理循环体
                 let body_result = self.convert_ast_node(body, program)?;
                 
                 // 添加跳转回循环开始标签的指令
                 if let Some(block) = self.context.get_current_block_mut() {
                     block.add_instruction(TACInstruction::Jump {
-                        label: loop_start_label,
+                        label: loop_start_label.clone(),
                     });
                 }
                 
-                // 添加循环结束标签
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Label {
-                        name: loop_end_label,
-                    });
-                }
+                // 建立控制流关系：循环体块 -> 循环开始块
+                self.establish_control_flow(self.context.get_current_block_id(), &loop_start_label)?;
+                
+                // 切换到循环结束块
+                self.switch_to_label_block(&loop_end_label)?;
                 
                 Ok(body_result)
             }
             
             Statement::Break => {
                 // 转换break语句
-                // 注意：这里需要知道break应该跳转到哪个标签
+                // 这里需要知道break应该跳转到哪个标签
                 // 暂时使用一个占位符标签，实际实现需要更复杂的标签管理
                 let break_label = "break_target".to_string();
                 
                 if let Some(block) = self.context.get_current_block_mut() {
                     block.add_instruction(TACInstruction::Jump {
-                        label: break_label,
+                        label: break_label.clone(),
                     });
                 }
+                
+                // 建立控制流关系
+                self.establish_control_flow(self.context.get_current_block_id(), &break_label)?;
                 
                 Ok(Operand::Constant(ConstantValue::Integer(0)))
             }
             
             Statement::Continue => {
                 // 转换continue语句
-                // 注意：这里需要知道continue应该跳转到哪个标签
+                // 这里需要知道continue应该跳转到哪个标签
                 // 暂时使用一个占位符标签，实际实现需要更复杂的标签管理
                 let continue_label = "continue_target".to_string();
                 
                 if let Some(block) = self.context.get_current_block_mut() {
                     block.add_instruction(TACInstruction::Jump {
-                        label: continue_label,
+                        label: continue_label.clone(),
                     });
                 }
+                
+                // 建立控制流关系
+                self.establish_control_flow(self.context.get_current_block_id(), &continue_label)?;
                 
                 Ok(Operand::Constant(ConstantValue::Integer(0)))
             }
@@ -1157,31 +1339,19 @@ impl ASTToTACConverter {
 
     /// 存储变量赋值，避免借用冲突
     fn store_variable_assignment(&mut self, target: &Operand, value: Operand) -> Result<(), String> {
-        // 先获取当前基本块，避免同时借用
-        let block = self.context.get_current_block_mut().cloned();
-        
-        if let Some(mut block) = block {
+        if let Some(block) = self.context.get_current_block_mut() {
             block.add_instruction(TACInstruction::Assign {
                 target: target.clone(),
                 source: value.clone(),
             });
-            
-            // 更新基本块
-            self.context.set_current_block(block);
         }
         Ok(())
     }
 
     /// 添加返回指令，避免借用冲突
     fn add_return_instruction(&mut self, value: Option<Operand>) -> Result<(), String> {
-        // 先获取当前基本块，避免同时借用
-        let block = self.context.get_current_block_mut().cloned();
-        
-        if let Some(mut block) = block {
+        if let Some(block) = self.context.get_current_block_mut() {
             block.add_instruction(TACInstruction::Return { value });
-            
-            // 更新基本块
-            self.context.set_current_block(block);
         }
         Ok(())
     }

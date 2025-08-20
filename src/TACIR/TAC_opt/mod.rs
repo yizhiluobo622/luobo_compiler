@@ -1,11 +1,11 @@
 pub mod constant_opt;
 pub mod algebraic_opt;
-pub mod control_flow_opt;
+pub mod inline;
 pub mod utils;
 
 pub use constant_opt::*;
 pub use algebraic_opt::*;
-pub use control_flow_opt::*;
+pub use inline::*;
 pub use utils::*;
 
 /// 优化Pass trait
@@ -76,7 +76,14 @@ impl OptimizationStats {
 pub fn run_all_optimizations(program: &mut crate::TACIR::TACProgram) -> Result<Vec<OptimizationResult>, String> {
     let mut results = Vec::new();
     
+    // 运行内联优化（最先执行）
+    println!("=== 开始内联优化 ===");
+    let mut inline_pass = inline::InlineOptimizationPass::new();
+    let inline_result = inline_pass.run(program)?;
+    results.push(inline_result);
+    
     // 运行常量优化
+    println!("=== 开始常量优化 ===");
     let mut constant_pass = constant_opt::ConstantOptimizationPass::new();
     let constant_result = constant_pass.run(program)?;
     results.push(constant_result);
@@ -86,10 +93,7 @@ pub fn run_all_optimizations(program: &mut crate::TACIR::TACProgram) -> Result<V
     // let algebraic_result = algebraic_pass.run(program)?;
     // results.push(algebraic_result);
     
-    // 运行控制流优化
-    // let mut control_flow_pass = control_flow_opt::ControlFlowOptimizationPass::new();
-    // let control_flow_result = control_flow_pass.run(program)?;
-    // results.push(control_flow_result);
+
     
     Ok(results)
 }

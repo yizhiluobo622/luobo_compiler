@@ -24,9 +24,7 @@ pub mod tests {
         // Semantic Analysis
         let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
         
-        // 检查AST中的数组维度和索引表达式
-        println!("=== 检查AST中的数组信息 ===");
-        check_ast_array_dimensions(&annotated_ast);
+
         
         // TAC IR转换
         println!("=== 开始TAC IR转换 ===");
@@ -46,25 +44,50 @@ pub mod tests {
                 // 验证IR的正确性
                 validate_tac_ir(&tac_program);
                 
-                // 运行常量传播优化
-                println!("\n=== 运行常量传播优化 ===");
-                let mut constant_opt = TACIR::TAC_opt::constant_opt::ConstantOptimizationPass::new();
-                match constant_opt.run(&mut tac_program) {
+                // 运行完整的优化流水线
+                println!("\n=== 运行完整优化流水线 ===");
+                match TACIR::TAC_opt::run_all_optimizations(&mut tac_program) {
+                    Ok(results) => {
+                        println!("✅ 优化流水线执行成功！");
+                        for (i, result) in results.iter().enumerate() {
+                            if result.optimized {
+                                println!("   第{}个优化: 优化指令数 {}", i + 1, result.instructions_optimized);
+                            } else {
+                                println!("   第{}个优化: 无优化机会", i + 1);
+                            }
+                        }
+                        
+                        // 显示优化后的IR
+                        println!("\n=== 优化后的IR ===");
+                        TACIR::debug_function_ir(&tac_program, "main");
+                        TACIR::print_tac_program(&tac_program);
+                    }
+                    Err(e) => {
+                        println!("❌ 优化流水线失败: {}", e);
+                    }
+                }
+                
+                // 单独运行内联优化进行详细分析
+                println!("\n=== 单独测试内联优化 ===");
+                let mut inline_opt = TACIR::TAC_opt::inline::InlineOptimizationPass::new();
+                // 设置较高的阈值以便内联小函数
+                inline_opt.set_threshold(100);
+                match inline_opt.run(&mut tac_program) {
                     Ok(result) => {
                         if result.optimized {
-                            println!("✅ 常量传播优化成功！");
+                            println!("✅ 内联优化成功！");
                             println!("   优化指令数: {}", result.instructions_optimized);
                             
-                            // 显示优化后的IR
-                            println!("\n=== 优化后的IR ===");
+                            // 显示内联后的IR
+                            println!("\n=== 内联优化后的IR ===");
                             TACIR::debug_function_ir(&tac_program, "main");
                             TACIR::print_tac_program(&tac_program);
                         } else {
-                            println!("ℹ️ 常量传播优化没有发现优化机会");
+                            println!("ℹ️ 内联优化没有发现优化机会");
                         }
                     }
                     Err(e) => {
-                        println!("❌ 常量传播优化失败: {}", e);
+                        println!("❌ 内联优化失败: {}", e);
                     }
                 }
             }
@@ -236,8 +259,12 @@ pub mod tests {
         }
     }
    
+  
+    
     #[test]
-    pub fn test_array_functionality() {
+    pub fn test_inline_constant_optimization() {
+        println!("=== 测试内联+常量优化协同效果 ===");
+        
         // 读取测试文件
         let source_code = std::fs::read_to_string("/home/yizhiluobo/luobo_compiler/src/target_code/sy/000_1.sy")
             .expect("Failed to read test file");
@@ -249,28 +276,66 @@ pub mod tests {
         let mut parser = Parser::new(lexer);
         let ast = parser.parse().expect("Parser failed");
         
-        // 先检查AST中的数组维度
-        println!("=== 检查AST中的数组维度 ===");
-        check_ast_array_dimensions(&ast);
-        
         // Semantic Analysis
         let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
         
-        // 检查语义分析后的数组维度
-        println!("\n=== 检查语义分析后的数组维度 ===");
-        check_ast_array_dimensions(&annotated_ast);
-        
         // TAC IR转换
-        println!("\n=== 开始数组功能测试 ===");
         match TACIR::convert_ast_to_tac(&annotated_ast) {
-            Ok(tac_program) => {
+            Ok(mut tac_program) => {
                 println!("✅ TAC IR转换成功！");
                 
-                // 专门测试数组功能
-                test_global_arrays(&tac_program);
-                test_array_instructions(&tac_program);
+                // 显示优化前的IR
+                println!("\n=== 优化前的IR ===");
+                TACIR::print_tac_program(&tac_program);
+                analyze_optimization_opportunities(&tac_program);
                 
-                println!("✅ 数组功能测试完成！");
+                // 步骤1: 执行内联优化
+                println!("\n=== 步骤1: 执行内联优化 ===");
+                let mut inline_opt = TACIR::TAC_opt::inline::InlineOptimizationPass::new();
+                inline_opt.set_threshold(100); // 高阈值，确保小函数被内联
+                
+                match inline_opt.run(&mut tac_program) {
+                    Ok(result) => {
+                        if result.optimized {
+                            println!("✅ 内联优化成功！内联了 {} 个函数调用", result.instructions_optimized);
+                            
+                            // 显示内联后的IR
+                            println!("\n=== 内联后的IR ===");
+                            TACIR::print_tac_program(&tac_program);
+                            analyze_optimization_opportunities(&tac_program);
+                        } else {
+                            println!("ℹ️ 内联优化没有发现优化机会");
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ 内联优化失败: {}", e);
+                        return;
+                    }
+                }
+                
+                // 步骤2: 执行常量传播优化
+                println!("\n=== 步骤2: 执行常量传播优化 ===");
+                let mut constant_opt = TACIR::TAC_opt::constant_opt::ConstantOptimizationPass::new();
+                
+                match constant_opt.run(&mut tac_program) {
+                    Ok(result) => {
+                        if result.optimized {
+                            println!("✅ 常量传播优化成功！优化了 {} 条指令", result.instructions_optimized);
+                            
+                            // 显示最终优化后的IR
+                            println!("\n=== 最终优化后的IR ===");
+                            TACIR::print_tac_program(&tac_program);
+                            analyze_optimization_opportunities(&tac_program);
+                        } else {
+                            println!("ℹ️ 常量传播优化没有发现优化机会");
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ 常量传播优化失败: {}", e);
+                    }
+                }
+                
+                println!("✅ 内联+常量优化协同测试完成！");
             }
             Err(e) => {
                 println!("❌ TAC IR转换失败: {}", e);
@@ -279,157 +344,52 @@ pub mod tests {
         }
     }
     
-    /// 检查AST中的数组维度是否正确识别
-    fn check_ast_array_dimensions(ast: &crate::frontend::ast::Ast) {
-        use crate::frontend::ast::{AstKind, Type};
+    /// 分析当前IR中的优化机会
+    fn analyze_optimization_opportunities(program: &TACIR::TACProgram) {
+        println!("\n📊 优化机会分析:");
         
-        match &ast.kind {
-            AstKind::Program { global_variables, .. } => {
-                println!("全局变量数量: {}", global_variables.len());
+        let mut total_instructions = 0;
+        let mut function_calls = 0;
+        let mut constant_assignments = 0;
+        let mut binary_ops_with_constants = 0;
+        
+        for function in &program.functions {
+            println!("  函数 {}: {} 个基本块", function.name, function.basic_blocks.len());
+            
+            for block in &function.basic_blocks {
+                total_instructions += block.instructions.len();
                 
-                for var_decl in global_variables {
-                    if let AstKind::VariableDeclaration { variable_name, variable_type, .. } = &var_decl.kind {
-                        println!("变量: {} -> {:?}", variable_name, variable_type);
-                        
-                        // 检查数组类型
-                        if let Type::ArrayType { element_type, array_size } = variable_type {
-                            println!("  📦 数组类型: element_type={:?}, array_size={:?}", element_type, array_size);
-                            
-                            // 检查嵌套数组
-                            if let Type::ArrayType { element_type: inner_element, array_size: inner_size } = element_type.as_ref() {
-                                println!("    🔄 嵌套数组: inner_element={:?}, inner_size={:?}", inner_element, inner_size);
-                            }
+                for instruction in &block.instructions {
+                    match instruction {
+                        TACIR::TACInstruction::FunctionCall { .. } => {
+                            function_calls += 1;
+                            println!("    🔗 函数调用: {:?}", instruction);
                         }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    
-    /// 测试全局数组变量是否正确添加
-    fn test_global_arrays(program: &TACIR::TACProgram) {
-        println!("\n=== 测试全局数组变量 ===");
-        
-        // 检查全局数组变量列表
-        println!("全局数组变量数量: {}", program.global_array_variables.len());
-        for (name, array_type, dimensions) in &program.global_array_variables {
-            println!("  📦 {}: {:?} 维度: {:?}", name, array_type, dimensions);
-        }
-        
-        // 检查全局变量列表中是否包含数组
-        println!("\n全局变量列表中的数组:");
-        for (name, var_type, initial_value) in &program.global_variables {
-            // 使用字符串匹配来检查是否为数组类型
-            let type_str = format!("{:?}", var_type);
-            if type_str.contains("ArrayType") {
-                println!("  📦 {}: {:?} 初始值: {:?}", name, var_type, initial_value);
-            }
-        }
-        
-        // 验证预期的数组变量
-        let expected_arrays = vec![
-            ("to", 5005),      // maxm
-            ("nex", 5005),     // maxm
-            ("head", 1005),    // maxn
-            ("que", 1005),     // maxn
-            ("inq", 1005),     // maxn
-        ];
-        
-        for (expected_name, expected_size) in expected_arrays {
-            let found = program.global_array_variables.iter()
-                .find(|(name, _, _)| name == expected_name);
-            
-            match found {
-                Some((name, array_type, dimensions)) => {
-                    println!("✅ 找到数组 {}: {:?} 维度: {:?}", name, array_type, dimensions);
-                    
-                    // 验证维度是否正确
-                    if let Some(first_dim) = dimensions.first() {
-                        if *first_dim == expected_size {
-                            println!("  ✅ 维度正确: {} = {}", expected_name, expected_size);
-                        } else {
-                            println!("  ❌ 维度错误: 期望 {}, 实际 {}", expected_size, first_dim);
+                        TACIR::TACInstruction::Assign { source: TACIR::Operand::Constant(_), .. } => {
+                            constant_assignments += 1;
+                            println!("    📊 常量赋值: {:?}", instruction);
                         }
+                        TACIR::TACInstruction::BinaryOp { left: TACIR::Operand::Constant(_), right: TACIR::Operand::Constant(_), .. } => {
+                            binary_ops_with_constants += 1;
+                            println!("    🧮 常量运算: {:?}", instruction);
+                        }
+                        TACIR::TACInstruction::BinaryOp { 
+                            left: TACIR::Operand::Constant(_), .. 
+                        } | TACIR::TACInstruction::BinaryOp { 
+                            right: TACIR::Operand::Constant(_), .. 
+                        } => {
+                            println!("    🔢 部分常量运算: {:?}", instruction);
+                        }
+                        _ => {}
                     }
-                }
-                None => {
-                    println!("❌ 未找到预期的数组: {}", expected_name);
                 }
             }
-        }
-    }
-    
-    /// 测试数组相关的IR指令是否正确生成
-    fn test_array_instructions(program: &TACIR::TACProgram) {
-        println!("\n=== 测试数组IR指令 ===");
-        
-        // 检查add_edge函数中的数组操作
-        if let Some(add_edge_func) = program.functions.iter().find(|f| f.name == "add_edge") {
-            println!("检查 add_edge 函数中的数组操作:");
-            
-            let mut array_ops_count = 0;
-            for (i, instruction) in add_edge_func.basic_blocks[0].instructions.iter().enumerate() {
-                match instruction {
-                    TACIR::TACInstruction::GetElementPtr { target, base, indices } => {
-                        println!("  {}: GetElementPtr {} = {}[{}]", i, target, base, indices[0]);
-                        array_ops_count += 1;
-                    }
-                    TACIR::TACInstruction::Store { value, address } => {
-                        println!("  {}: Store {} -> {}", i, value, address);
-                        array_ops_count += 1;
-                    }
-                    TACIR::TACInstruction::Load { target, address } => {
-                        println!("  {}: Load {} <- {}", i, target, address);
-                        array_ops_count += 1;
-                    }
-                    _ => {}
-                }
-            }
-            println!("  📊 add_edge函数中数组操作总数: {}", array_ops_count);
         }
         
-        // 检查init函数中的数组操作
-        if let Some(init_func) = program.functions.iter().find(|f| f.name == "init") {
-            println!("\n检查 init 函数中的数组操作:");
-            
-            let mut array_ops_count = 0;
-            for (i, instruction) in init_func.basic_blocks[0].instructions.iter().enumerate() {
-                match instruction {
-                    TACIR::TACInstruction::GetElementPtr { target, base, indices } => {
-                        println!("  {}: GetElementPtr {} = {}[{}]", i, target, base, indices[0]);
-                        array_ops_count += 1;
-                    }
-                    TACIR::TACInstruction::Store { value, address } => {
-                        println!("  {}: Store {} -> {}", i, value, address);
-                        array_ops_count += 1;
-                    }
-                    _ => {}
-                }
-            }
-            println!("  📊 init函数中数组操作总数: {}", array_ops_count);
-        }
-        
-        // 检查inqueue函数中的数组操作
-        if let Some(inqueue_func) = program.functions.iter().find(|f| f.name == "inqueue") {
-            println!("\n检查 inqueue 函数中的数组操作:");
-            
-            let mut array_ops_count = 0;
-            for (i, instruction) in inqueue_func.basic_blocks[0].instructions.iter().enumerate() {
-                match instruction {
-                    TACIR::TACInstruction::GetElementPtr { target, base, indices } => {
-                        println!("  {}: GetElementPtr {} = {}[{}]", i, target, base, indices[0]);
-                        array_ops_count += 1;
-                    }
-                    TACIR::TACInstruction::Store { value, address } => {
-                        println!("  {}: Store {} -> {}", i, value, address);
-                        array_ops_count += 1;
-                    }
-                    _ => {}
-                }
-            }
-            println!("  📊 inqueue函数中数组操作总数: {}", array_ops_count);
-        }
+        println!("  📈 总指令数: {}", total_instructions);
+        println!("  🔗 函数调用数: {} (内联机会)", function_calls);
+        println!("  📊 常量赋值数: {} (传播机会)", constant_assignments);
+        println!("  🧮 常量运算数: {} (折叠机会)", binary_ops_with_constants);
     }
 
 }

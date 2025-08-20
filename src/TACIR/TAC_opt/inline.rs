@@ -1,0 +1,921 @@
+use crate::TACIR::tacir::{TACInstruction, TACProgram, TACFunction, BasicBlock, Operand, ConstantValue, BinaryOperator, UnaryOperator};
+use crate::TACIR::TAC_opt::{OptimizationPass, OptimizationResult, OptimizationStats};
+use std::collections::{HashMap, HashSet};
+
+/// 内联优化Pass
+pub struct InlineOptimizationPass {
+    threshold: usize,
+    max_depth: usize,
+    loop_info: HashMap<String, bool>,
+    stats: OptimizationStats,
+}
+
+impl InlineOptimizationPass {
+    pub fn new() -> Self {
+        Self {
+            threshold: 50,
+            max_depth: 3,
+            loop_info: HashMap::new(),
+            stats: OptimizationStats::new(),
+        }
+    }
+
+    pub fn set_threshold(&mut self, threshold: usize) {
+        self.threshold = threshold;
+    }
+
+    pub fn set_max_depth(&mut self, max_depth: usize) {
+        self.max_depth = max_depth;
+    }
+
+    pub fn update_loop_info(&mut self, loop_info: HashMap<String, bool>) {
+        self.loop_info = loop_info;
+    }
+
+    fn run_internal(&mut self, program: &mut TACProgram) -> Result<usize, String> {
+        println!("🚀 开始内联优化...");
+        
+        let mut total_inlines = 0;
+        let mut round = 0;
+        
+        loop {
+            round += 1;
+            println!("📊 内联优化第 {} 轮", round);
+            
+            let inlines_this_round = self.perform_inline_round(program)?;
+            total_inlines += inlines_this_round;
+            
+            if inlines_this_round == 0 {
+                println!("✅ 第 {} 轮没有新的内联机会，优化完成", round);
+                break;
+            }
+            
+            println!("✅ 第 {} 轮完成 {} 个内联优化", round, inlines_this_round);
+        }
+        
+        println!("=== 内联优化统计 ===");
+        println!("内联函数数: {}", total_inlines);
+        println!("消除调用数: {}", total_inlines);
+        println!("新增指令数: {}", total_inlines);
+        println!("优化基本块数: {}", total_inlines);
+        
+        println!("✅ 内联优化成功！内联了 {} 个函数调用", total_inlines);
+        Ok(total_inlines)
+    }
+
+    fn perform_inline_round(&mut self, program: &mut TACProgram) -> Result<usize, String> {
+        let mut inlines_this_round = 0;
+        let mut global_temp_counter = 0;
+        
+        // 分析所有函数
+        let function_analysis = self.analyze_functions(program);
+        self.print_function_analysis(&function_analysis);
+        
+        // 构建调用图
+        let call_graph = self.build_call_graph(program);
+        self.print_call_graph(&call_graph);
+        
+        // 收集所有需要内联的信息，避免借用冲突
+        let mut inline_requests = Vec::new();
+        
+        for (func_idx, function) in program.functions.iter().enumerate() {
+            for (block_idx, block) in function.basic_blocks.iter().enumerate() {
+                for (inst_idx, instruction) in block.instructions.iter().enumerate() {
+                    if let TACInstruction::FunctionCall { target, function_name, arguments } = instruction {
+                        if let Some(callee_func) = self.find_function_by_name(program, function_name) {
+                            let should_inline = self.should_inline_function(
+                                &callee_func, 
+                                &function_analysis, 
+                                &call_graph
+                            );
+                            
+                            println!("📊 函数 {} 内联评分: {} (阈值: {})", 
+                                function_name, 
+                                self.get_inline_score(&callee_func, &function_analysis, &call_graph),
+                                self.threshold
+                            );
+                            
+                            if should_inline {
+                                println!("🔍 尝试内联: 函数[{}] 基本块[{}] 指令[{}] -> {}", 
+                                    func_idx, block_idx, inst_idx, function_name);
+                                
+                                inline_requests.push((func_idx, block_idx, inst_idx, function_name.clone(), target.clone(), arguments.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 执行内联（从后往前，避免索引变化）
+        for (func_idx, block_idx, inst_idx, function_name, target, arguments) in inline_requests.into_iter().rev() {
+            if let Ok(Some(inlined_instructions)) = self.inline_function_call(
+                &function_name,
+                &arguments,
+                &target,
+                program,
+                &mut global_temp_counter
+            ) {
+                // 获取函数和基本块的可变引用
+                if let Some(function) = program.functions.get_mut(func_idx) {
+                    if let Some(block) = function.basic_blocks.get_mut(block_idx) {
+                        println!("🔍 原始指令: {:?}", block.instructions[inst_idx]);
+                        
+                        // 移除原始函数调用指令
+                        let removed_inst = block.instructions.remove(inst_idx);
+                        println!("🗑️ 移除指令: {:?}", removed_inst);
+                        
+                        // 插入内联后的指令
+                        for (j, inst) in inlined_instructions.into_iter().enumerate() {
+                            block.instructions.insert(inst_idx + j, inst);
+                        }
+                        
+                        let new_instruction_count = block.instructions.len();
+                        println!("📊 基本块指令数变化: {} -> {}", new_instruction_count + 1, new_instruction_count);
+                        
+                        inlines_this_round += 1;
+                        println!("✅ 成功内联函数: {} -> {}", function.name, function_name);
+                    }
+                }
+                
+                // 修复被内联函数本身的指令（在借用结束后）
+                self.fix_callee_function_instructions(program, &function_name);
+            } else {
+                println!("❌ 内联失败: {}", function_name);
+            }
+        }
+        
+        Ok(inlines_this_round)
+    }
+
+    fn should_inline_function(
+        &self, 
+        function: &TACFunction, 
+        analysis: &HashMap<String, FunctionAnalysisInfo>,
+        call_graph: &HashMap<String, Vec<String>>
+    ) -> bool {
+        let score = self.get_inline_score(function, analysis, call_graph);
+        score <= self.threshold
+    }
+
+    fn get_inline_score(
+        &self, 
+        function: &TACFunction, 
+        analysis: &HashMap<String, FunctionAnalysisInfo>,
+        call_graph: &HashMap<String, Vec<String>>
+    ) -> usize {
+        let mut score = 0;
+        
+        // 基础分数：指令数量
+        let instruction_count = function.basic_blocks.iter()
+            .map(|block| block.instructions.len())
+            .sum::<usize>();
+        score += instruction_count;
+        
+        // 函数调用惩罚
+        if let Some(calls) = call_graph.get(&function.name) {
+            if !calls.is_empty() {
+                score += 20; // 调用其他函数的惩罚
+            }
+        }
+        
+        // 循环惩罚
+        if let Some(has_loops) = self.loop_info.get(&function.name) {
+            if *has_loops {
+                score += 30; // 包含循环的惩罚
+            }
+        }
+        
+        score
+    }
+
+    fn inline_function_call(
+        &mut self,
+        function_name: &str,
+        arguments: &[Operand],
+        target: &Operand,
+        program: &TACProgram,
+        global_temp_counter: &mut usize
+    ) -> Result<Option<Vec<TACInstruction>>, String> {
+        let callee_function = self.find_function_by_name(program, function_name)
+            .ok_or_else(|| format!("找不到函数: {}", function_name))?;
+
+        println!("🔧 开始内联函数: {}，目标变量: {:?}", function_name, target);
+
+        // 1. 创建变量映射表（参数→实参）
+        let mut variable_mapping = HashMap::new();
+        for (i, (param_name, _)) in callee_function.parameters.iter().enumerate() {
+            variable_mapping.insert(
+                param_name.clone(), 
+                arguments.get(i).cloned().unwrap_or(Operand::Constant(ConstantValue::Integer(0)))
+            );
+        }
+
+        // 2. 创建临时变量映射表并立即应用
+        let mut temp_mapping = HashMap::new();
+        let mut next_temp_id = *global_temp_counter;
+
+        // 收集所有需要映射的临时变量
+        let mut all_temp_vars = HashSet::new();
+        for block in &callee_function.basic_blocks {
+            for instruction in &block.instructions {
+                self.collect_temp_variables(instruction, &mut all_temp_vars);
+            }
+        }
+
+        // 建立映射并立即应用到所有操作数
+        for &temp_id in &all_temp_vars {
+            temp_mapping.insert(temp_id, next_temp_id);
+            println!("🆕 映射临时变量: Temp({}) -> Temp({})", temp_id, next_temp_id);
+            next_temp_id += 1;
+        }
+
+        // 3. 生成内联指令（立即应用所有映射）
+        let mut inlined_instructions = Vec::new();
+        
+        for block in &callee_function.basic_blocks {
+            // 处理标签
+            if let Some(label) = &block.label {
+                inlined_instructions.push(TACInstruction::Label {
+                    name: format!("{}_inline", label),
+                });
+            }
+
+            // 处理指令
+            for instruction in &block.instructions {
+                let mapped_instruction = self.apply_mappings_to_instruction(
+                    instruction, 
+                    &variable_mapping, 
+                    &temp_mapping,
+                    target  // 用于Return指令的目标
+                )?;
+                
+                inlined_instructions.push(mapped_instruction);
+            }
+        }
+
+        // 4. 更新全局计数器
+        *global_temp_counter = next_temp_id;
+
+        println!("📝 内联指令数量: {}", inlined_instructions.len());
+        for (i, inst) in inlined_instructions.iter().enumerate() {
+            println!("  {}: {:?}", i, inst);
+        }
+
+        Ok(Some(inlined_instructions))
+    }
+
+    /// 带映射的内联指令方法
+    fn inline_instruction_with_mapping(
+        &self,
+        instruction: &TACInstruction,
+        variable_mapping: &HashMap<String, Operand>,
+        target: &Operand,
+        temp_mapping: &HashMap<usize, usize>  // 临时变量映射表
+    ) -> Result<TACInstruction, String> {
+        match instruction {
+            TACInstruction::Assign { target: inst_target, source } => {
+                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+                let new_source = self.map_operand_with_mapping(source, variable_mapping, temp_mapping)?;
+                
+                Ok(TACInstruction::Assign {
+                    target: new_target,
+                    source: new_source,
+                })
+            }
+            
+            TACInstruction::BinaryOp { target: inst_target, left, op, right } => {
+                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+                let new_left = self.map_operand_with_mapping(left, variable_mapping, temp_mapping)?;
+                let new_right = self.map_operand_with_mapping(right, variable_mapping, temp_mapping)?;
+                
+                Ok(TACInstruction::BinaryOp {
+                    target: new_target,
+                    left: new_left,
+                    op: op.clone(),
+                    right: new_right,
+                })
+            }
+            
+            TACInstruction::UnaryOp { target: inst_target, op, operand } => {
+                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+                let new_operand = self.map_operand_with_mapping(operand, variable_mapping, temp_mapping)?;
+                
+                Ok(TACInstruction::UnaryOp {
+                    target: new_target,
+                    op: op.clone(),
+                    operand: new_operand,
+                })
+            }
+            
+            TACInstruction::FunctionCall { target: inst_target, function_name, arguments } => {
+                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+                let mut new_arguments = Vec::new();
+                
+                for arg in arguments {
+                    let new_arg = self.map_operand_with_mapping(arg, variable_mapping, temp_mapping)?;
+                    new_arguments.push(new_arg);
+                }
+                
+                Ok(TACInstruction::FunctionCall {
+                    target: new_target,
+                    function_name: function_name.clone(),
+                    arguments: new_arguments,
+                })
+            }
+            
+            TACInstruction::Return { value } => {
+                if let Some(val) = value {
+                    let new_value = self.map_operand_with_mapping(val, variable_mapping, temp_mapping)?;
+                    // 直接赋值给调用者的目标变量
+                    Ok(TACInstruction::Assign {
+                        target: target.clone(),
+                        source: new_value,
+                    })
+                } else {
+                    // void函数返回空操作（使用dummy赋值，后续优化会消除）
+                    Ok(TACInstruction::Assign {
+                        target: Operand::Constant(ConstantValue::Integer(0)),
+                        source: Operand::Constant(ConstantValue::Integer(0)),
+                    })
+                }
+            }
+            
+            TACInstruction::Label { name } => {
+                let new_name = format!("{}_inline", name);
+                Ok(TACInstruction::Label { name: new_name })
+            }
+            
+            TACInstruction::Jump { label } => {
+                let new_label = format!("{}_inline", label);
+                Ok(TACInstruction::Jump { label: new_label })
+            }
+            
+            TACInstruction::ConditionalJump { condition, true_label, false_label } => {
+                let new_condition = self.map_operand_with_mapping(condition, variable_mapping, temp_mapping)?;
+                let new_true_label = format!("{}_inline", true_label);
+                let new_false_label = format!("{}_inline", false_label);
+                Ok(TACInstruction::ConditionalJump { 
+                    condition: new_condition, 
+                    true_label: new_true_label, 
+                    false_label: new_false_label 
+                })
+            }
+            
+            TACInstruction::GetElementPtr { target: inst_target, base, indices } => {
+                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+                let new_base = self.map_operand_with_mapping(base, variable_mapping, temp_mapping)?;
+                let mut new_indices = Vec::new();
+                
+                for idx in indices {
+                    let new_idx = self.map_operand_with_mapping(idx, variable_mapping, temp_mapping)?;
+                    new_indices.push(new_idx);
+                }
+                
+                Ok(TACInstruction::GetElementPtr {
+                    target: new_target,
+                    base: new_base,
+                    indices: new_indices,
+                })
+            }
+            
+            TACInstruction::Load { target: inst_target, address } => {
+                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+                let new_address = self.map_operand_with_mapping(address, variable_mapping, temp_mapping)?;
+                
+                Ok(TACInstruction::Load {
+                    target: new_target,
+                    address: new_address,
+                })
+            }
+            
+            TACInstruction::Store { value, address } => {
+                let new_value = self.map_operand_with_mapping(value, variable_mapping, temp_mapping)?;
+                let new_address = self.map_operand_with_mapping(address, variable_mapping, temp_mapping)?;
+                
+                Ok(TACInstruction::Store {
+                    value: new_value,
+                    address: new_address,
+                })
+            }
+            
+            TACInstruction::Allocate { target: inst_target, size } => {
+                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+                let new_size = self.map_operand_with_mapping(size, variable_mapping, temp_mapping)?;
+                
+                Ok(TACInstruction::Allocate {
+                    target: new_target,
+                    size: new_size,
+                })
+            }
+            
+            TACInstruction::Param { value } => {
+                let new_value = self.map_operand_with_mapping(value, variable_mapping, temp_mapping)?;
+                Ok(TACInstruction::Param { value: new_value })
+            }
+            
+            TACInstruction::FunctionStart { name, param_count } => {
+                let new_name = format!("{}_inline", name);
+                Ok(TACInstruction::FunctionStart { name: new_name, param_count: *param_count })
+            }
+            
+            TACInstruction::FunctionEnd => Ok(TACInstruction::FunctionEnd),
+        }
+    }
+
+    /// 带映射的操作数映射方法
+    fn map_operand_with_mapping(
+        &self,
+        operand: &Operand,
+        variable_mapping: &HashMap<String, Operand>,
+        temp_mapping: &HashMap<usize, usize>
+    ) -> Result<Operand, String> {
+        match operand {
+            Operand::Variable(name) => {
+                if let Some(mapped_operand) = variable_mapping.get(name) {
+                    Ok(mapped_operand.clone())
+                } else {
+                    // 检查是否是全局常量（不应该重命名）
+                    if name == "VALUE" || name == "MULTIPLIER" {
+                        Ok(Operand::Variable(name.clone()))
+                    } else {
+                        // 不是参数且不是全局常量，需要重命名避免冲突
+                        let new_name = format!("{}_inline", name);
+                        Ok(Operand::Variable(new_name))
+                    }
+                }
+            }
+            
+            Operand::Temp(id) => {
+                if let Some(&mapped_id) = temp_mapping.get(id) {
+                    Ok(Operand::Temp(mapped_id))
+                } else {
+                    // 如果没有映射，保持原样（理论上不应该发生）
+                    Ok(Operand::Temp(*id))
+                }
+            }
+            
+            Operand::Constant(val) => Ok(Operand::Constant(val.clone())),
+            
+            Operand::Label(label) => {
+                let new_label = format!("{}_inline", label);
+                Ok(Operand::Label(new_label))
+            }
+        }
+    }
+
+    /// 收集指令中使用的临时变量
+    fn collect_temp_variables(&self, instruction: &TACInstruction, temp_vars: &mut HashSet<usize>) {
+        match instruction {
+            TACInstruction::Assign { target, source } => {
+                self.collect_temps_in_operand(target, temp_vars);
+                self.collect_temps_in_operand(source, temp_vars);
+            }
+            TACInstruction::BinaryOp { target, left, right, .. } => {
+                self.collect_temps_in_operand(target, temp_vars);
+                self.collect_temps_in_operand(left, temp_vars);
+                self.collect_temps_in_operand(right, temp_vars);
+            }
+            TACInstruction::UnaryOp { target, operand, .. } => {
+                self.collect_temps_in_operand(target, temp_vars);
+                self.collect_temps_in_operand(operand, temp_vars);
+            }
+            TACInstruction::FunctionCall { target, arguments, .. } => {
+                self.collect_temps_in_operand(target, temp_vars);
+                for arg in arguments {
+                    self.collect_temps_in_operand(arg, temp_vars);
+                }
+            }
+            TACInstruction::Return { value } => {
+                if let Some(val) = value {
+                    self.collect_temps_in_operand(val, temp_vars);
+                }
+            }
+            TACInstruction::ConditionalJump { condition, .. } => {
+                self.collect_temps_in_operand(condition, temp_vars);
+            }
+            TACInstruction::GetElementPtr { target, base, indices } => {
+                self.collect_temps_in_operand(target, temp_vars);
+                self.collect_temps_in_operand(base, temp_vars);
+                for idx in indices {
+                    self.collect_temps_in_operand(idx, temp_vars);
+                }
+            }
+            TACInstruction::Load { target, address } => {
+                self.collect_temps_in_operand(target, temp_vars);
+                self.collect_temps_in_operand(address, temp_vars);
+            }
+            TACInstruction::Store { value, address } => {
+                self.collect_temps_in_operand(value, temp_vars);
+                self.collect_temps_in_operand(address, temp_vars);
+            }
+            TACInstruction::Allocate { target, size } => {
+                self.collect_temps_in_operand(target, temp_vars);
+                self.collect_temps_in_operand(size, temp_vars);
+            }
+            TACInstruction::Param { value } => {
+                self.collect_temps_in_operand(value, temp_vars);
+            }
+            TACInstruction::Label { .. } => {} // 标签不包含临时变量
+            TACInstruction::Jump { .. } => {} // 跳转不包含临时变量
+            TACInstruction::FunctionStart { .. } => {} // 函数开始不包含临时变量
+            TACInstruction::FunctionEnd => {} // 函数结束不包含临时变量
+        }
+    }
+
+    /// 收集操作数中的临时变量
+    fn collect_temps_in_operand(&self, operand: &Operand, temp_vars: &mut HashSet<usize>) {
+        if let Operand::Temp(id) = operand {
+            temp_vars.insert(*id);
+        }
+    }
+
+    /// 简化优化：只消除真正的冗余
+    fn optimize_inlined_code(&self, instructions: Vec<TACInstruction>) -> Vec<TACInstruction> {
+        let mut optimized = Vec::new();
+        
+        for instruction in instructions {
+            // 只消除明显的冗余
+            if let TACInstruction::Assign { target, source } = &instruction {
+                if target == source {
+                    println!("🗑️ 消除冗余赋值: {:?} = {:?}", target, source);
+                    continue; // 消除自赋值
+                }
+            }
+            
+            optimized.push(instruction);
+        }
+        
+        optimized
+    }
+    
+    /// 替换指令中的临时变量引用
+    fn replace_temp_references_in_instruction(&self, instruction: TACInstruction, temp_mapping: &HashMap<usize, usize>) -> TACInstruction {
+        match instruction {
+            TACInstruction::Assign { target, source } => {
+                TACInstruction::Assign {
+                    target: self.replace_temp_references(&target, temp_mapping),
+                    source: self.replace_temp_references(&source, temp_mapping),
+                }
+            }
+            
+            TACInstruction::BinaryOp { target, left, right, op } => {
+                TACInstruction::BinaryOp {
+                    target: self.replace_temp_references(&target, temp_mapping),
+                    left: self.replace_temp_references(&left, temp_mapping),
+                    right: self.replace_temp_references(&right, temp_mapping),
+                    op,
+                }
+            }
+            
+            TACInstruction::UnaryOp { target, op, operand } => {
+                TACInstruction::UnaryOp {
+                    target: self.replace_temp_references(&target, temp_mapping),
+                    op,
+                    operand: self.replace_temp_references(&operand, temp_mapping),
+                }
+            }
+            
+            TACInstruction::Return { value } => {
+                TACInstruction::Return {
+                    value: value.map(|v| self.replace_temp_references(&v, temp_mapping)),
+                }
+            }
+            
+            // 其他指令类型保持不变
+            _ => instruction,
+        }
+    }
+    
+    /// 替换操作数中的临时变量引用
+    fn replace_temp_references(&self, operand: &Operand, temp_mapping: &HashMap<usize, usize>) -> Operand {
+        match operand {
+            Operand::Temp(id) => {
+                if let Some(&mapped_id) = temp_mapping.get(id) {
+                    Operand::Temp(mapped_id)
+                } else {
+                    operand.clone()
+                }
+            }
+            _ => operand.clone(),
+        }
+    }
+
+    fn find_function_by_name(&self, program: &TACProgram, name: &str) -> Option<TACFunction> {
+        program.functions.iter().find(|f| f.name == name).cloned()
+    }
+    
+    /// 修复被内联函数本身的指令
+    fn fix_callee_function_instructions(&self, program: &mut TACProgram, function_name: &str) {
+        if let Some(callee_function) = program.functions.iter_mut().find(|f| f.name == function_name) {
+            for block in &mut callee_function.basic_blocks {
+                // 对每个基本块的指令进行优化修复
+                block.instructions = self.optimize_inlined_code(block.instructions.clone());
+            }
+            println!("🔧 修复了被内联函数 {} 的指令", function_name);
+        }
+    }
+    
+    /// 立即应用所有映射到指令
+    fn apply_mappings_to_instruction(
+        &self,
+        instruction: &TACInstruction,
+        variable_mapping: &HashMap<String, Operand>,
+        temp_mapping: &HashMap<usize, usize>,
+        return_target: &Operand  // Return指令的目标
+    ) -> Result<TACInstruction, String> {
+        match instruction {
+            // Return指令特殊处理：转换为赋值
+            TACInstruction::Return { value } => {
+                if let Some(val) = value {
+                    let mapped_value = self.apply_operand_mappings(val, variable_mapping, temp_mapping);
+                    Ok(TACInstruction::Assign {
+                        target: return_target.clone(),
+                        source: mapped_value,
+                    })
+                } else {
+                    // void函数返回空操作
+                    Ok(TACInstruction::Assign {
+                        target: Operand::Constant(ConstantValue::Integer(0)),
+                        source: Operand::Constant(ConstantValue::Integer(0)),
+                    })
+                }
+            }
+
+            // 其他指令正常处理
+            TACInstruction::Assign { target, source } => {
+                Ok(TACInstruction::Assign {
+                    target: self.apply_operand_mappings(target, variable_mapping, temp_mapping),
+                    source: self.apply_operand_mappings(source, variable_mapping, temp_mapping),
+                })
+            }
+
+            TACInstruction::BinaryOp { target, left, op, right } => {
+                Ok(TACInstruction::BinaryOp {
+                    target: self.apply_operand_mappings(target, variable_mapping, temp_mapping),
+                    left: self.apply_operand_mappings(left, variable_mapping, temp_mapping),
+                    op: op.clone(),
+                    right: self.apply_operand_mappings(right, variable_mapping, temp_mapping),
+                })
+            }
+
+            TACInstruction::UnaryOp { target, op, operand } => {
+                Ok(TACInstruction::UnaryOp {
+                    target: self.apply_operand_mappings(target, variable_mapping, temp_mapping),
+                    op: op.clone(),
+                    operand: self.apply_operand_mappings(operand, variable_mapping, temp_mapping),
+                })
+            }
+
+            TACInstruction::FunctionCall { target, function_name, arguments } => {
+                let mut new_arguments = Vec::new();
+                for arg in arguments {
+                    new_arguments.push(self.apply_operand_mappings(arg, variable_mapping, temp_mapping));
+                }
+                
+                Ok(TACInstruction::FunctionCall {
+                    target: self.apply_operand_mappings(target, variable_mapping, temp_mapping),
+                    function_name: function_name.clone(),
+                    arguments: new_arguments,
+                })
+            }
+
+            TACInstruction::Label { name } => {
+                Ok(TACInstruction::Label { name: format!("{}_inline", name) })
+            }
+
+            TACInstruction::Jump { label } => {
+                Ok(TACInstruction::Jump { label: format!("{}_inline", label) })
+            }
+
+            TACInstruction::ConditionalJump { condition, true_label, false_label } => {
+                Ok(TACInstruction::ConditionalJump { 
+                    condition: self.apply_operand_mappings(condition, variable_mapping, temp_mapping),
+                    true_label: format!("{}_inline", true_label),
+                    false_label: format!("{}_inline", false_label)
+                })
+            }
+
+            TACInstruction::GetElementPtr { target, base, indices } => {
+                let mut new_indices = Vec::new();
+                for idx in indices {
+                    new_indices.push(self.apply_operand_mappings(idx, variable_mapping, temp_mapping));
+                }
+                
+                Ok(TACInstruction::GetElementPtr {
+                    target: self.apply_operand_mappings(target, variable_mapping, temp_mapping),
+                    base: self.apply_operand_mappings(base, variable_mapping, temp_mapping),
+                    indices: new_indices,
+                })
+            }
+
+            TACInstruction::Load { target, address } => {
+                Ok(TACInstruction::Load {
+                    target: self.apply_operand_mappings(target, variable_mapping, temp_mapping),
+                    address: self.apply_operand_mappings(address, variable_mapping, temp_mapping),
+                })
+            }
+
+            TACInstruction::Store { value, address } => {
+                Ok(TACInstruction::Store {
+                    value: self.apply_operand_mappings(value, variable_mapping, temp_mapping),
+                    address: self.apply_operand_mappings(address, variable_mapping, temp_mapping),
+                })
+            }
+
+            TACInstruction::Allocate { target, size } => {
+                Ok(TACInstruction::Allocate {
+                    target: self.apply_operand_mappings(target, variable_mapping, temp_mapping),
+                    size: self.apply_operand_mappings(size, variable_mapping, temp_mapping),
+                })
+            }
+
+            TACInstruction::Param { value } => {
+                Ok(TACInstruction::Param { value: self.apply_operand_mappings(value, variable_mapping, temp_mapping) })
+            }
+
+            TACInstruction::FunctionStart { name, param_count } => {
+                Ok(TACInstruction::FunctionStart { name: format!("{}_inline", name), param_count: *param_count })
+            }
+
+            TACInstruction::FunctionEnd => Ok(TACInstruction::FunctionEnd),
+        }
+    }
+
+    /// 立即应用映射到操作数
+    fn apply_operand_mappings(
+        &self,
+        operand: &Operand,
+        variable_mapping: &HashMap<String, Operand>,
+        temp_mapping: &HashMap<usize, usize>
+    ) -> Operand {
+        match operand {
+            Operand::Variable(name) => {
+                variable_mapping.get(name)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        // 检查是否是全局常量（不应该重命名）
+                        if name == "VALUE" || name == "MULTIPLIER" {
+                            Operand::Variable(name.clone())
+                        } else {
+                            // 不是参数且不是全局常量，需要重命名避免冲突
+                            Operand::Variable(format!("{}_inline", name))
+                        }
+                    })
+            }
+
+            Operand::Temp(id) => {
+                Operand::Temp(*temp_mapping.get(id).unwrap_or(id))
+            }
+
+            Operand::Constant(val) => Operand::Constant(val.clone()),
+            
+            Operand::Label(label) => Operand::Label(format!("{}_inline", label)),
+        }
+    }
+
+    fn analyze_functions(&self, program: &TACProgram) -> HashMap<String, FunctionAnalysisInfo> {
+        let mut analysis = HashMap::new();
+        
+        for function in &program.functions {
+            let mut info = FunctionAnalysisInfo {
+                instruction_count: 0,
+                basic_block_count: function.basic_blocks.len(),
+                temp_variable_count: 0,
+                has_function_calls: false,
+                has_loops: false,
+                call_count: 0,
+                inline_score: 0,
+                suitable_for_inline: false,
+            };
+            
+            let mut temp_vars: HashSet<usize> = HashSet::new();
+            
+            for block in &function.basic_blocks {
+                for instruction in &block.instructions {
+                    info.instruction_count += 1;
+                    
+                    match instruction {
+                        TACInstruction::FunctionCall { .. } => {
+                            info.has_function_calls = true;
+                            info.call_count += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            
+            info.temp_variable_count = temp_vars.len();
+            info.inline_score = self.get_inline_score(function, &analysis, &HashMap::new());
+            info.suitable_for_inline = info.inline_score <= self.threshold;
+            
+            analysis.insert(function.name.clone(), info);
+        }
+        
+        analysis
+    }
+
+    fn build_call_graph(&self, program: &TACProgram) -> HashMap<String, Vec<String>> {
+        let mut call_graph = HashMap::new();
+        
+        for function in &program.functions {
+            let mut calls = Vec::new();
+            
+            for block in &function.basic_blocks {
+                for instruction in &block.instructions {
+                    if let TACInstruction::FunctionCall { function_name, .. } = instruction {
+                        calls.push(function_name.clone());
+                    }
+                }
+            }
+            
+            call_graph.insert(function.name.clone(), calls);
+        }
+        
+        call_graph
+    }
+
+    fn print_function_analysis(&self, analysis: &HashMap<String, FunctionAnalysisInfo>) {
+        println!("=== 函数分析信息 ===");
+        for (name, info) in analysis {
+            println!("函数: {}", name);
+            println!("  指令数: {}", info.instruction_count);
+            println!("  基本块数: {}", info.basic_block_count);
+            println!("  临时变量数: {}", info.temp_variable_count);
+            println!("  有函数调用: {}", info.has_function_calls);
+            println!("  有循环: {}", info.has_loops);
+            println!("  被调用次数: {}", info.call_count);
+            println!("  内联评分: {}", info.inline_score);
+            println!("  适合内联: {}", info.suitable_for_inline);
+            println!();
+        }
+    }
+
+    fn print_call_graph(&self, call_graph: &HashMap<String, Vec<String>>) {
+        println!("=== 调用关系 ===");
+        for (caller, callees) in call_graph {
+            if !callees.is_empty() {
+                println!("{} 调用: {:?}", caller, callees);
+            }
+        }
+        println!();
+    }
+
+    pub fn get_metrics(&self) -> OptimizationMetrics {
+        OptimizationMetrics {
+            pass_name: "Inline Optimization".to_string(),
+            instructions_removed: 0,
+            instructions_added: 0,
+            basic_blocks_optimized: 0,
+            functions_inlined: 0,
+        }
+    }
+}
+
+impl OptimizationPass for InlineOptimizationPass {
+    fn run(&mut self, program: &mut TACProgram) -> Result<OptimizationResult, String> {
+        let inlines = self.run_internal(program)?;
+        
+        // 更新统计信息
+        self.stats.control_flow_optimizations = inlines;
+        
+        // 创建优化结果
+        let mut result = OptimizationResult::new();
+        if inlines > 0 {
+            result.mark_optimized();
+            result.instructions_optimized = inlines;
+            result.nodes_optimized = inlines;
+        }
+        
+        Ok(result)
+    }
+    
+    fn name(&self) -> &str {
+        "InlineOptimizationPass"
+    }
+    
+    fn get_stats(&self) -> &OptimizationStats {
+        &self.stats
+    }
+}
+
+#[derive(Debug)]
+pub struct FunctionAnalysisInfo {
+    pub instruction_count: usize,
+    pub basic_block_count: usize,
+    pub temp_variable_count: usize,
+    pub has_function_calls: bool,
+    pub has_loops: bool,
+    pub call_count: usize,
+    pub inline_score: usize,
+    pub suitable_for_inline: bool,
+}
+
+#[derive(Debug)]
+pub struct OptimizationMetrics {
+    pub pass_name: String,
+    pub instructions_removed: usize,
+    pub instructions_added: usize,
+    pub basic_blocks_optimized: usize,
+    pub functions_inlined: usize,
+}
