@@ -40,26 +40,16 @@ impl InlineOptimizationPass {
         
         loop {
             round += 1;
-            println!("📊 内联优化第 {} 轮", round);
             
             let inlines_this_round = self.perform_inline_round(program)?;
             total_inlines += inlines_this_round;
             
             if inlines_this_round == 0 {
-                println!("✅ 第 {} 轮没有新的内联机会，优化完成", round);
                 break;
             }
-            
-            println!("✅ 第 {} 轮完成 {} 个内联优化", round, inlines_this_round);
         }
         
-        println!("=== 内联优化统计 ===");
-        println!("内联函数数: {}", total_inlines);
-        println!("消除调用数: {}", total_inlines);
-        println!("新增指令数: {}", total_inlines);
-        println!("优化基本块数: {}", total_inlines);
-        
-        println!("✅ 内联优化成功！内联了 {} 个函数调用", total_inlines);
+        println!("✅ 内联优化完成，共内联 {} 个函数调用", total_inlines);
         Ok(total_inlines)
     }
 
@@ -69,11 +59,11 @@ impl InlineOptimizationPass {
         
         // 分析所有函数
         let function_analysis = self.analyze_functions(program);
-        self.print_function_analysis(&function_analysis);
+        // self.print_function_analysis(&function_analysis);
         
         // 构建调用图
         let call_graph = self.build_call_graph(program);
-        self.print_call_graph(&call_graph);
+        // self.print_call_graph(&call_graph);
         
         // 收集所有需要内联的信息，避免借用冲突
         let mut inline_requests = Vec::new();
@@ -89,15 +79,15 @@ impl InlineOptimizationPass {
                                 &call_graph
                             );
                             
-                            println!("📊 函数 {} 内联评分: {} (阈值: {})", 
-                                function_name, 
-                                self.get_inline_score(&callee_func, &function_analysis, &call_graph),
-                                self.threshold
-                            );
+                            // println!("📊 函数 {} 内联评分: {} (阈值: {})", 
+                            //     function_name, 
+                            //     self.get_inline_score(&callee_func, &function_analysis, &call_graph),
+                            //     self.threshold
+                            // );
                             
                             if should_inline {
-                                println!("🔍 尝试内联: 函数[{}] 基本块[{}] 指令[{}] -> {}", 
-                                    func_idx, block_idx, inst_idx, function_name);
+                                // println!("🔍 尝试内联: 函数[{}] 基本块[{}] 指令[{}] -> {}", 
+                                //     func_idx, block_idx, inst_idx, function_name);
                                 
                                 inline_requests.push((func_idx, block_idx, inst_idx, function_name.clone(), target.clone(), arguments.clone()));
                             }
@@ -116,32 +106,25 @@ impl InlineOptimizationPass {
                 program,
                 &mut global_temp_counter
             ) {
-                // 获取函数和基本块的可变引用
-                if let Some(function) = program.functions.get_mut(func_idx) {
-                    if let Some(block) = function.basic_blocks.get_mut(block_idx) {
-                        println!("🔍 原始指令: {:?}", block.instructions[inst_idx]);
-                        
-                        // 移除原始函数调用指令
-                        let removed_inst = block.instructions.remove(inst_idx);
-                        println!("🗑️ 移除指令: {:?}", removed_inst);
-                        
-                        // 插入内联后的指令
-                        for (j, inst) in inlined_instructions.into_iter().enumerate() {
-                            block.instructions.insert(inst_idx + j, inst);
+                        // 获取函数和基本块的可变引用
+                        if let Some(function) = program.functions.get_mut(func_idx) {
+                            if let Some(block) = function.basic_blocks.get_mut(block_idx) {
+                                // 移除原始函数调用指令
+                                let removed_inst = block.instructions.remove(inst_idx);
+                                
+                                // 插入内联后的指令
+                                for (j, inst) in inlined_instructions.into_iter().enumerate() {
+                                    block.instructions.insert(inst_idx + j, inst);
+                                }
+                                
+                                inlines_this_round += 1;
+                            }
                         }
-                        
-                        let new_instruction_count = block.instructions.len();
-                        println!("📊 基本块指令数变化: {} -> {}", new_instruction_count + 1, new_instruction_count);
-                        
-                        inlines_this_round += 1;
-                        println!("✅ 成功内联函数: {} -> {}", function.name, function_name);
-                    }
-                }
                 
-                // 修复被内联函数本身的指令（在借用结束后）
+                // 修复被内联函数本身的指令
                 self.fix_callee_function_instructions(program, &function_name);
             } else {
-                println!("❌ 内联失败: {}", function_name);
+                // println!("❌ 内联失败: {}", function_name);
             }
         }
         
@@ -200,8 +183,6 @@ impl InlineOptimizationPass {
         let callee_function = self.find_function_by_name(program, function_name)
             .ok_or_else(|| format!("找不到函数: {}", function_name))?;
 
-        println!("🔧 开始内联函数: {}，目标变量: {:?}", function_name, target);
-
         // 1. 创建变量映射表（参数→实参）
         let mut variable_mapping = HashMap::new();
         for (i, (param_name, _)) in callee_function.parameters.iter().enumerate() {
@@ -226,27 +207,59 @@ impl InlineOptimizationPass {
         // 建立映射并立即应用到所有操作数
         for &temp_id in &all_temp_vars {
             temp_mapping.insert(temp_id, next_temp_id);
-            println!("🆕 映射临时变量: Temp({}) -> Temp({})", temp_id, next_temp_id);
             next_temp_id += 1;
         }
 
-        // 3. 生成内联指令（立即应用所有映射）
+        // 3. 创建标签映射表，确保标签的唯一性
+        let mut label_mapping = HashMap::new();
+        let mut label_counter = 0;
+        
+        // 收集所有标签（包括跳转指令中的标签）
+        let mut all_labels = HashSet::new();
+        for block in &callee_function.basic_blocks {
+            if let Some(label) = &block.label {
+                all_labels.insert(label.clone());
+            }
+            for instruction in &block.instructions {
+                match instruction {
+                    TACInstruction::Jump { label } => {
+                        all_labels.insert(label.clone());
+                    }
+                    TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                        all_labels.insert(true_label.clone());
+                        all_labels.insert(false_label.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // 为所有标签创建映射
+        for label in all_labels {
+            let new_label = format!("L{}_inline", label_counter);
+            label_mapping.insert(label, new_label);
+            label_counter += 1;
+        }
+
+        // 4. 生成内联指令（立即应用所有映射）
         let mut inlined_instructions = Vec::new();
         
         for block in &callee_function.basic_blocks {
             // 处理标签
             if let Some(label) = &block.label {
+                let new_label = label_mapping.get(label).unwrap();
                 inlined_instructions.push(TACInstruction::Label {
-                    name: format!("{}_inline", label),
+                    name: new_label.clone(),
                 });
             }
 
             // 处理指令
             for instruction in &block.instructions {
-                let mapped_instruction = self.apply_mappings_to_instruction(
+                let mapped_instruction = self.apply_mappings_to_instruction_with_labels(
                     instruction, 
                     &variable_mapping, 
                     &temp_mapping,
+                    &label_mapping,
                     target  // 用于Return指令的目标
                 )?;
                 
@@ -254,13 +267,8 @@ impl InlineOptimizationPass {
             }
         }
 
-        // 4. 更新全局计数器
+        // 5. 更新全局计数器
         *global_temp_counter = next_temp_id;
-
-        println!("📝 内联指令数量: {}", inlined_instructions.len());
-        for (i, inst) in inlined_instructions.iter().enumerate() {
-            println!("  {}: {:?}", i, inst);
-        }
 
         Ok(Some(inlined_instructions))
     }
@@ -362,8 +370,8 @@ impl InlineOptimizationPass {
                 })
             }
             
-            TACInstruction::GetElementPtr { target: inst_target, base, indices } => {
-                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+            TACInstruction::GetElementPtr { target, base, indices } => {
+                let new_target = self.map_operand_with_mapping(target, variable_mapping, temp_mapping)?;
                 let new_base = self.map_operand_with_mapping(base, variable_mapping, temp_mapping)?;
                 let mut new_indices = Vec::new();
                 
@@ -379,8 +387,8 @@ impl InlineOptimizationPass {
                 })
             }
             
-            TACInstruction::Load { target: inst_target, address } => {
-                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+            TACInstruction::Load { target, address } => {
+                let new_target = self.map_operand_with_mapping(target, variable_mapping, temp_mapping)?;
                 let new_address = self.map_operand_with_mapping(address, variable_mapping, temp_mapping)?;
                 
                 Ok(TACInstruction::Load {
@@ -399,8 +407,8 @@ impl InlineOptimizationPass {
                 })
             }
             
-            TACInstruction::Allocate { target: inst_target, size } => {
-                let new_target = self.map_operand_with_mapping(inst_target, variable_mapping, temp_mapping)?;
+            TACInstruction::Allocate { target, size } => {
+                let new_target = self.map_operand_with_mapping(target, variable_mapping, temp_mapping)?;
                 let new_size = self.map_operand_with_mapping(size, variable_mapping, temp_mapping)?;
                 
                 Ok(TACInstruction::Allocate {
@@ -607,21 +615,33 @@ impl InlineOptimizationPass {
     
     /// 修复被内联函数本身的指令
     fn fix_callee_function_instructions(&self, program: &mut TACProgram, function_name: &str) {
-        if let Some(callee_function) = program.functions.iter_mut().find(|f| f.name == function_name) {
-            for block in &mut callee_function.basic_blocks {
-                // 对每个基本块的指令进行优化修复
-                block.instructions = self.optimize_inlined_code(block.instructions.clone());
+        // 修复被内联函数本身的指令
+        if let Some(function) = program.functions.iter_mut().find(|f| f.name == function_name) {
+            for block in &mut function.basic_blocks {
+                for instruction in &mut block.instructions {
+                    match instruction {
+                        TACInstruction::GetElementPtr { target, base, indices } => {
+                            if let Operand::Variable(var_name) = base {
+                                if var_name.ends_with("_inline") {
+                                    // 将 _inline 后缀的变量名改回原变量名
+                                    *var_name = var_name.trim_end_matches("_inline").to_string();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
-            println!("🔧 修复了被内联函数 {} 的指令", function_name);
         }
     }
     
-    /// 立即应用所有映射到指令
-    fn apply_mappings_to_instruction(
+    /// 立即应用所有映射到指令（带标签映射）
+    fn apply_mappings_to_instruction_with_labels(
         &self,
         instruction: &TACInstruction,
         variable_mapping: &HashMap<String, Operand>,
         temp_mapping: &HashMap<usize, usize>,
+        label_mapping: &HashMap<String, String>,
         return_target: &Operand  // Return指令的目标
     ) -> Result<TACInstruction, String> {
         match instruction {
@@ -681,18 +701,22 @@ impl InlineOptimizationPass {
             }
 
             TACInstruction::Label { name } => {
-                Ok(TACInstruction::Label { name: format!("{}_inline", name) })
+                let new_name = label_mapping.get(name).unwrap_or(&format!("{}_inline", name)).clone();
+                Ok(TACInstruction::Label { name: new_name })
             }
 
             TACInstruction::Jump { label } => {
-                Ok(TACInstruction::Jump { label: format!("{}_inline", label) })
+                let new_label = label_mapping.get(label).unwrap_or(&format!("{}_inline", label)).clone();
+                Ok(TACInstruction::Jump { label: new_label })
             }
 
             TACInstruction::ConditionalJump { condition, true_label, false_label } => {
+                let new_true_label = label_mapping.get(true_label).unwrap_or(&format!("{}_inline", true_label)).clone();
+                let new_false_label = label_mapping.get(false_label).unwrap_or(&format!("{}_inline", false_label)).clone();
                 Ok(TACInstruction::ConditionalJump { 
                     condition: self.apply_operand_mappings(condition, variable_mapping, temp_mapping),
-                    true_label: format!("{}_inline", true_label),
-                    false_label: format!("{}_inline", false_label)
+                    true_label: new_true_label,
+                    false_label: new_false_label
                 })
             }
 
@@ -918,4 +942,25 @@ pub struct OptimizationMetrics {
     pub instructions_added: usize,
     pub basic_blocks_optimized: usize,
     pub functions_inlined: usize,
+}
+
+impl InlineOptimizationPass {
+    /// 立即应用所有映射到指令（兼容旧版本）
+    fn apply_mappings_to_instruction(
+        &self,
+        instruction: &TACInstruction,
+        variable_mapping: &HashMap<String, Operand>,
+        temp_mapping: &HashMap<usize, usize>,
+        return_target: &Operand  // Return指令的目标
+    ) -> Result<TACInstruction, String> {
+        // 调用新版本的方法，使用空的标签映射
+        let empty_label_mapping = HashMap::new();
+        self.apply_mappings_to_instruction_with_labels(
+            instruction,
+            variable_mapping,
+            temp_mapping,
+            &empty_label_mapping,
+            return_target
+        )
+    }
 }

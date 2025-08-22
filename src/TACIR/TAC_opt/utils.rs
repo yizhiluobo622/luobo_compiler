@@ -264,25 +264,25 @@ pub fn safe_rename_variable(
 
 /// 打印函数分析信息
 pub fn print_function_analysis(call_graph: &CallGraphInfo) {
-    println!("=== 函数分析信息 ===");
-    for (name, info) in &call_graph.functions {
-        println!("函数: {}", name);
-        println!("  指令数: {}", info.instruction_count);
-        println!("  基本块数: {}", info.basic_block_count);
-        println!("  临时变量数: {}", info.temp_variable_count);
-        println!("  有函数调用: {}", info.has_function_calls);
-        println!("  有循环: {}", info.has_loops);
-        println!("  被调用次数: {}", info.call_sites);
-        println!("  内联评分: {}", info.inline_score());
-        println!("  适合内联: {}", info.should_inline(50)); // 默认阈值50
-        println!();
-    }
+    // println!("=== 函数分析信息 ===");
+    // for (name, info) in &call_graph.functions {
+    //     println!("函数: {}", name);
+    //     println!("  指令数: {}", info.instruction_count);
+    //     println!("  基本块数: {}", info.basic_block_count);
+    //     println!("  临时变量数: {}", info.temp_variable_count);
+    //     println!("  有函数调用: {}", info.has_function_calls);
+    //     println!("  有循环: {}", info.has_loops);
+    //     println!("  被调用次数: {}", info.call_sites);
+    //     println!("  内联评分: {}", info.inline_score());
+    //     println!("  适合内联: {}", info.should_inline(50)); // 默认阈值50
+    //     println!();
+    // }
     
-    println!("=== 调用关系 ===");
-    for (caller, callees) in &call_graph.call_relations {
-        println!("{} 调用: {:?}", caller, callees);
-    }
-    println!();
+    // println!("=== 调用关系 ===");
+    // for (caller, callees) in &call_graph.call_relations {
+    //     println!("{} 调用: {:?}", caller, callees);
+    // }
+    // println!();
 }
 
 /// 优化统计信息

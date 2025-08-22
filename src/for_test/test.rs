@@ -24,22 +24,12 @@ pub mod tests {
         // Semantic Analysis
         let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
         
-
-        
         // TAC IR转换
         println!("=== 开始TAC IR转换 ===");
         match TACIR::convert_ast_to_tac(&annotated_ast) {
             Ok(mut tac_program) => {
                 println!("✅ TAC IR转换成功！");
-                
-                // 显示IR结构信息
-                TACIR::debug_ir_structure(&tac_program);
-                
-                // 显示main函数的详细IR
-                TACIR::debug_function_ir(&tac_program, "main");
-                
-                // 显示完整的TAC程序
-                TACIR::print_tac_program(&tac_program);
+                println!("程序包含 {} 个函数", tac_program.functions.len());
                 
                 // 验证IR的正确性
                 validate_tac_ir(&tac_program);
@@ -57,17 +47,20 @@ pub mod tests {
                             }
                         }
                         
-                        // 显示优化后的IR
-                        println!("\n=== 优化后的IR ===");
-                        TACIR::debug_function_ir(&tac_program, "main");
-                        TACIR::print_tac_program(&tac_program);
+                        // 显示优化后的简要信息
+                        if let Some(main_func) = tac_program.get_main_function() {
+                            println!("\n=== 优化后main函数信息 ===");
+                            println!("基本块数: {}", main_func.basic_blocks.len());
+                            let total_instructions: usize = main_func.basic_blocks.iter()
+                                .map(|block| block.instructions.len())
+                                .sum();
+                            println!("总指令数: {}", total_instructions);
+                        }
                     }
                     Err(e) => {
                         println!("❌ 优化流水线失败: {}", e);
                     }
                 }
-                
-
             }
             Err(e) => {
                 println!("❌ TAC IR转换失败: {}", e);

@@ -131,6 +131,88 @@ impl DataFlowAnalysis {
         }
     }
     
+    /// 重建IR结构，确保在优化后的一致性
+    fn rebuild_ir_structure(&mut self, function: &mut TACFunction) -> Result<(), String> {
+        println!("🔧 开始重建IR结构...");
+        
+        // 1. 验证所有基本块ID的有效性
+        self.validate_basic_block_ids(function)?;
+        
+        // 2. 重新构建CFG
+        self.build_cfg(function);
+        
+        // 3. 清理无效的引用
+        self.cleanup_invalid_references(function)?;
+        
+        // 4. 重新分配指令ID（如果需要）
+        self.reassign_instruction_ids(function)?;
+        
+        println!("✅ IR结构重建完成");
+        Ok(())
+    }
+    
+    /// 验证基本块ID的有效性
+    fn validate_basic_block_ids(&self, function: &TACFunction) -> Result<(), String> {
+        let mut valid_ids = HashSet::new();
+        
+        // 收集所有有效的基本块ID
+        for block in &function.basic_blocks {
+            valid_ids.insert(block.id);
+        }
+        
+        // 验证所有引用都是有效的
+        for block in &function.basic_blocks {
+            for succ_id in &block.successors {
+                if !valid_ids.contains(succ_id) {
+                    return Err(format!("无效的基本块引用: {} -> {}", block.id, succ_id));
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// 清理无效的引用
+    fn cleanup_invalid_references(&mut self, function: &mut TACFunction) -> Result<(), String> {
+        let mut cleaned_count = 0;
+        
+        // 先收集所有有效的基本块ID
+        let valid_ids: HashSet<usize> = function.basic_blocks.iter().map(|b| b.id).collect();
+        
+        for block in &mut function.basic_blocks {
+            // 清理无效的后继引用
+            let original_len = block.successors.len();
+            block.successors.retain(|&succ_id| valid_ids.contains(&succ_id));
+            
+            let cleaned = original_len - block.successors.len();
+            if cleaned > 0 {
+                cleaned_count += cleaned;
+                println!("🧹 清理了基本块 {} 的 {} 个无效引用", block.id, cleaned);
+            }
+        }
+        
+        if cleaned_count > 0 {
+            println!("🧹 总共清理了 {} 个无效的基本块引用", cleaned_count);
+        }
+        
+        Ok(())
+    }
+    
+    /// 重新分配指令ID
+    fn reassign_instruction_ids(&mut self, function: &mut TACFunction) -> Result<(), String> {
+        let mut next_id = 0;
+        
+        for block in &mut function.basic_blocks {
+            for instruction in &mut block.instructions {
+                // 为每条指令分配新的ID（如果需要）
+                // 这里可以根据具体需求实现
+                next_id += 1;
+            }
+        }
+        
+        Ok(())
+    }
+    
     /// 使用工作列表算法分析函数的数据流
     fn analyze_with_worklist(&mut self, function: &TACFunction, global_constants: &HashMap<String, ConstantValue>) -> Result<(), String> {
         // 初始化前驱后继关系
@@ -173,7 +255,17 @@ impl DataFlowAnalysis {
             
             // 基于入口状态计算出口状态
             let old_out_state = self.out_states.get(&block_id).cloned().unwrap_or_default();
-            let new_out_state = self.transfer_function(function.get_basic_block(block_id).unwrap(), &new_in_state);
+            
+            // 安全获取基本块，避免unwrap崩溃
+            let basic_block = match function.get_basic_block(block_id) {
+                Some(block) => block,
+                None => {
+                    println!("⚠️ 警告：找不到基本块ID: {}，跳过此基本块", block_id);
+                    continue;
+                }
+            };
+            
+            let new_out_state = self.transfer_function(basic_block, &new_in_state);
             
             if new_out_state != old_out_state {
                 self.out_states.insert(block_id, new_out_state);
@@ -196,7 +288,7 @@ impl DataFlowAnalysis {
             println!("⚠️ 数据流分析达到最大迭代次数: {}", MAX_ITERATIONS);
         }
         
-        println!("🔧 数据流分析完成，迭代次数: {}", iterations);
+
         Ok(())
     }
     
@@ -429,7 +521,7 @@ impl ConstantOptimizationPass {
             let mut round_optimizations = 0;
             round += 1;
             
-            println!("🔄 第 {} 轮常量优化...", round);
+
             
             // 对每个函数进行优化
             for function in &mut program.functions {
@@ -455,7 +547,7 @@ impl ConstantOptimizationPass {
             }
             
             total_optimizations += round_optimizations;
-            println!("✅ 第 {} 轮完成，优化 {} 条指令", round, round_optimizations);
+
             
             // 如果没有新的优化，说明已经收敛
             if round_optimizations == 0 {
@@ -489,7 +581,7 @@ impl ConstantOptimizationPass {
             if let Some(operand) = initial_value {
                 if let Operand::Constant(constant_value) = operand {
                     self.global_constants.insert(var_name.clone(), constant_value.clone());
-                    println!("🔧 初始化全局常量: {} = {:?}", var_name, constant_value);
+
                 }
             }
         }
@@ -509,14 +601,13 @@ impl ConstantOptimizationPass {
                 block.instructions[i] = folded;
                 optimizations += 1;
                 self.constant_foldings += 1;
-                println!("🧮 常量折叠: {:?} -> {:?}", instruction, folded_clone);
+
             }
             else if let Some(propagated) = self.try_constant_propagation_with_state(&instruction, &in_state.variable_constants, &in_state.temp_constants)? {
                 let propagated_clone = propagated.clone();
                 block.instructions[i] = propagated;
                 optimizations += 1;
                 self.constant_propagations += 1;
-                println!("📊 常量传播: {:?} -> {:?}", instruction, propagated_clone);
             }
             
             // 更新当前状态（用于后续指令）
@@ -753,7 +844,7 @@ impl ConstantOptimizationPass {
             
             // 检查是否是死代码（赋值给临时变量但后续没有被使用）
             if self.is_dead_assignment(instruction, block, i) {
-                println!("🗑️ 删除死代码: {:?}", instruction);
+
                 block.instructions.remove(i);
                 eliminations += 1;
             } else {
@@ -873,12 +964,16 @@ impl ConstantOptimizationPass {
             let mut round_optimizations = 0;
             round += 1;
             
-            println!("🔄 第 {} 轮常量优化...", round);
+
             
             // 对每个函数进行优化
             for function in &mut program.functions {
                 // 执行数据流分析
                 let mut dataflow = DataFlowAnalysis::new();
+                
+                // 在数据流分析前重建IR结构
+                dataflow.rebuild_ir_structure(function)?;
+                
                 dataflow.analyze_with_worklist(function, &self.global_constants)?;
                 
                 // 基于数据流分析结果优化每个基本块
@@ -899,7 +994,7 @@ impl ConstantOptimizationPass {
             }
             
             total_optimizations += round_optimizations;
-            println!("✅ 第 {} 轮完成，优化 {} 条指令", round, round_optimizations);
+
             
             // 如果没有新的优化，说明已经收敛
             if round_optimizations == 0 {
@@ -925,5 +1020,59 @@ impl ConstantOptimizationPass {
         }
         
         Ok(result)
+    }
+
+    fn run_constant_propagation(&mut self, function: &mut TACFunction) -> Result<usize, String> {
+        let mut optimized_count = 0;
+        let mut round = 0;
+        
+        loop {
+            round += 1;
+            let mut changed = false;
+            
+            // 数据流分析
+            let mut constant_values = HashMap::new();
+            
+            // 初始化常量值
+            for block in &function.basic_blocks {
+                for instruction in &block.instructions {
+                    if let TACInstruction::Assign { target, source } = instruction {
+                        if let Operand::Constant(constant) = source {
+                            if let Operand::Temp(temp_id) = target {
+                                constant_values.insert(*temp_id, constant.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 传播常量值
+            for block in &mut function.basic_blocks {
+                for instruction in &mut block.instructions {
+                    match instruction {
+                        TACInstruction::Assign { target, source } => {
+                            if let Operand::Temp(temp_id) = source {
+                                if let Some(constant) = constant_values.get(temp_id) {
+                                    *source = Operand::Constant(constant.clone());
+                                    changed = true;
+                                    optimized_count += 1;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            
+            if !changed {
+                break;
+            }
+        }
+        
+        if optimized_count > 0 {
+            println!("📊 常量传播: {} 次", optimized_count);
+        }
+        
+        Ok(optimized_count)
     }
 }
