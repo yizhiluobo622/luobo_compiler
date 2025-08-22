@@ -1,95 +1,480 @@
 use crate::TACIR::tacir::{TACProgram, TACFunction, BasicBlock, TACInstruction, Operand, ConstantValue, BinaryOperator, UnaryOperator};
 use super::{OptimizationPass, OptimizationResult, OptimizationStats};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque, BTreeMap};
 
-/// 常量优化Pass
-/// 基于Worklist的智能常量传播算法
-pub struct ConstantOptimizationPass {
-    stats: OptimizationStats,
-    /// 变量到常量值的映射
-    variable_constants: HashMap<String, ConstantValue>,
-    /// 临时变量到常量值的映射
-    temp_constants: HashMap<usize, ConstantValue>,
-    /// 工作队列：需要重新分析的基本块ID
-    worklist: Vec<usize>,
-    /// 已处理的基本块ID集合（避免重复处理）
-    processed_blocks: HashSet<usize>,
+/// 常量优化错误类型
+#[derive(Debug)]
+pub enum ConstantOptimizationError {
+    DivisionByZero,
+    ModuloByZero,
+    UnsupportedOperation(String),
+    DataFlowAnalysisFailed(String),
+    InvalidOperand(String),
 }
 
-impl ConstantOptimizationPass {
-    pub fn new() -> Self {
+impl std::fmt::Display for ConstantOptimizationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::DivisionByZero => write!(f, "除零错误"),
+            Self::ModuloByZero => write!(f, "模零错误"),
+            Self::UnsupportedOperation(op) => write!(f, "不支持的运算: {}", op),
+            Self::DataFlowAnalysisFailed(msg) => write!(f, "数据流分析失败: {}", msg),
+            Self::InvalidOperand(msg) => write!(f, "无效操作数: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ConstantOptimizationError {}
+
+/// 常量状态 - 使用HashMap保持兼容性
+#[derive(Debug, Clone, PartialEq, Default)]
+struct ConstantState {
+    variable_constants: HashMap<String, ConstantValue>,
+    temp_constants: HashMap<usize, ConstantValue>,
+}
+
+impl ConstantState {
+    fn new() -> Self {
         Self {
-            stats: OptimizationStats::new(),
             variable_constants: HashMap::new(),
             temp_constants: HashMap::new(),
-            worklist: Vec::new(),
-            processed_blocks: HashSet::new(),
         }
     }
     
-    /// 运行基于Worklist的常量传播优化
-    pub fn run(&mut self, program: &mut TACProgram) -> Result<OptimizationResult, String> {
-        let mut result = OptimizationResult::new();
-        let mut total_optimizations = 0;
-        let mut round = 0;
-        const MAX_ROUNDS: usize = 20; // 防止无限循环
+    /// 计算两个状态的交集
+    fn intersect(&self, other: &Self) -> Self {
+        let mut result = Self::new();
         
-        // 遍历所有函数
-        for function in &mut program.functions {
-            // 初始化Worklist：包含所有基本块
-            self.worklist = function.basic_blocks.iter().map(|b| b.id).collect();
-            self.processed_blocks.clear();
-            
-            // 清空常量映射表
-            self.variable_constants.clear();
-            self.temp_constants.clear();
-            
-            // 主循环：基于Worklist的常量传播
-            while !self.worklist.is_empty() && round < MAX_ROUNDS {
-                round += 1;
-                
-                // 取出一个基本块ID
-                let block_id = self.worklist.pop().unwrap();
-                
-                // 如果已经处理过，跳过
-                if self.processed_blocks.contains(&block_id) {
-                    continue;
+        // 变量常量的交集
+        for (name, value) in &self.variable_constants {
+            if let Some(other_value) = other.variable_constants.get(name) {
+                if value == other_value {
+                    result.variable_constants.insert(name.clone(), value.clone());
                 }
-                
-                // 标记为已处理
-                self.processed_blocks.insert(block_id);
-                
-                // 获取基本块
-                if let Some(block) = function.get_basic_block_mut(block_id) {
-                    // 记录优化前的常量数量
-                    let old_constant_count = self.variable_constants.len() + self.temp_constants.len();
-                    
-                    // 分析和优化该基本块
-                    let block_optimizations = self.analyze_and_optimize_block(block)?;
-                    total_optimizations += block_optimizations;
-                    
-                    // 检查是否有新的常量信息
-                    let new_constant_count = self.variable_constants.len() + self.temp_constants.len();
-                    let constants_changed = new_constant_count > old_constant_count || block_optimizations > 0;
-                    
-                    // 如果常量状态发生变化，将后继基本块加入Worklist
-                    if constants_changed {
-                        let successors: Vec<usize> = block.successors.clone();
-                        for succ_id in successors {
-                            if !self.worklist.contains(&succ_id) && !self.processed_blocks.contains(&succ_id) {
-                                self.worklist.push(succ_id);
-                            }
+            }
+        }
+        
+        // 临时变量常量的交集
+        for (id, value) in &self.temp_constants {
+            if let Some(other_value) = other.temp_constants.get(id) {
+                if value == other_value {
+                    result.temp_constants.insert(*id, value.clone());
+                }
+            }
+        }
+        
+        result
+    }
+    
+    /// 增量更新状态，减少克隆开销
+    fn update_incrementally(&mut self, other: &Self) {
+        for (key, value) in &other.variable_constants {
+            if self.variable_constants.get(key) != Some(value) {
+                self.variable_constants.insert(key.clone(), value.clone());
+            }
+        }
+        
+        for (id, value) in &other.temp_constants {
+            if self.temp_constants.get(id) != Some(value) {
+                self.temp_constants.insert(*id, value.clone());
+            }
+        }
+    }
+    
+    /// 检查状态是否为空
+    fn is_empty(&self) -> bool {
+        self.variable_constants.is_empty() && self.temp_constants.is_empty()
+    }
+}
+
+/// 数据流分析框架 - 使用工作列表算法提高性能
+struct DataFlowAnalysis {
+    // 每个基本块的入口和出口状态
+    in_states: HashMap<usize, ConstantState>,
+    out_states: HashMap<usize, ConstantState>,
+    // 前驱和后继关系
+    predecessors: HashMap<usize, Vec<usize>>,
+    successors: HashMap<usize, Vec<usize>>,
+}
+
+impl DataFlowAnalysis {
+    fn new() -> Self {
+        Self {
+            in_states: HashMap::new(),
+            out_states: HashMap::new(),
+            predecessors: HashMap::new(),
+            successors: HashMap::new(),
+        }
+    }
+    
+    /// 构建控制流图
+    fn build_cfg(&mut self, function: &TACFunction) {
+        self.predecessors.clear();
+        self.successors.clear();
+        
+        // 初始化前驱后继关系
+        for block in &function.basic_blocks {
+            self.predecessors.insert(block.id, Vec::new());
+            self.successors.insert(block.id, Vec::new());
+        }
+        
+        // 建立前驱后继关系
+        for block in &function.basic_blocks {
+            for succ_id in &block.successors {
+                if let Some(preds) = self.predecessors.get_mut(succ_id) {
+                    preds.push(block.id);
+                }
+                if let Some(succs) = self.successors.get_mut(&block.id) {
+                    succs.push(*succ_id);
+                }
+            }
+        }
+    }
+    
+    /// 使用工作列表算法分析函数的数据流
+    fn analyze_with_worklist(&mut self, function: &TACFunction, global_constants: &HashMap<String, ConstantValue>) -> Result<(), String> {
+        // 初始化前驱后继关系
+        self.build_cfg(function);
+        
+        // 初始化入口基本块的状态
+        if let Some(entry_block) = function.basic_blocks.first() {
+            let mut entry_state = ConstantState::new();
+            entry_state.variable_constants = global_constants.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            self.in_states.insert(entry_block.id, entry_state);
+        }
+        
+        // 使用工作列表算法，只处理变化的基本块
+        let mut worklist: VecDeque<usize> = VecDeque::new();
+        
+        // 初始化工作列表：从入口基本块开始
+        if let Some(entry_block) = function.basic_blocks.first() {
+            worklist.push_back(entry_block.id);
+        }
+        
+        let mut iterations = 0;
+        const MAX_ITERATIONS: usize = 50; // 增加最大迭代次数
+        
+        while let Some(block_id) = worklist.pop_front() {
+            if iterations >= MAX_ITERATIONS {
+                break;
+            }
+            iterations += 1;
+            
+            // 计算入口状态（前驱基本块出口状态的交集）
+            let old_in_state = self.in_states.get(&block_id).cloned().unwrap_or_default();
+            let new_in_state = self.compute_in_state(block_id, global_constants);
+            
+            let mut state_changed = false;
+            
+            if new_in_state != old_in_state {
+                self.in_states.insert(block_id, new_in_state.clone());
+                state_changed = true;
+            }
+            
+            // 基于入口状态计算出口状态
+            let old_out_state = self.out_states.get(&block_id).cloned().unwrap_or_default();
+            let new_out_state = self.transfer_function(function.get_basic_block(block_id).unwrap(), &new_in_state);
+            
+            if new_out_state != old_out_state {
+                self.out_states.insert(block_id, new_out_state);
+                state_changed = true;
+            }
+            
+            // 如果状态变化，将后继基本块加入工作列表
+            if state_changed {
+                if let Some(succs) = self.successors.get(&block_id) {
+                    for succ_id in succs {
+                        if !worklist.contains(succ_id) {
+                            worklist.push_back(*succ_id);
                         }
                     }
                 }
             }
         }
         
+        if iterations >= MAX_ITERATIONS {
+            println!("⚠️ 数据流分析达到最大迭代次数: {}", MAX_ITERATIONS);
+        }
+        
+        println!("🔧 数据流分析完成，迭代次数: {}", iterations);
+        Ok(())
+    }
+    
+    /// 计算基本块入口状态
+    fn compute_in_state(&self, block_id: usize, global_constants: &HashMap<String, ConstantValue>) -> ConstantState {
+        let mut in_state = ConstantState::new();
+        
+        // 获取前驱基本块
+        if let Some(preds) = self.predecessors.get(&block_id) {
+            if preds.is_empty() {
+                // 入口基本块，使用全局常量
+                in_state.variable_constants = global_constants.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            } else {
+                // 计算前驱基本块出口状态的交集
+                let mut has_predecessor = false;
+                for pred_id in preds {
+                    if let Some(pred_out_state) = self.out_states.get(pred_id) {
+                        if !has_predecessor {
+                            in_state = pred_out_state.clone();
+                            has_predecessor = true;
+                        } else {
+                            in_state = in_state.intersect(pred_out_state);
+                        }
+                    }
+                }
+                
+                // 如果没有前驱状态，使用全局常量
+                if !has_predecessor {
+                    in_state.variable_constants = global_constants.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                }
+            }
+        }
+        
+        in_state
+    }
+    
+    /// 传输函数：基于入口状态计算出口状态
+    fn transfer_function(&self, block: &BasicBlock, in_state: &ConstantState) -> ConstantState {
+        let mut out_state = in_state.clone();
+        
+        for instruction in &block.instructions {
+            match instruction {
+                TACInstruction::Assign { target, source } => {
+                    // 使用in_state来解析源操作数（不是out_state！）
+                    if let Some(constant_value) = self.resolve_operand_to_constant(source, in_state) {
+                        self.update_target_in_state(&mut out_state, target, constant_value);
+                    } else {
+                        self.clear_target_in_state(&mut out_state, target);
+                    }
+                }
+                TACInstruction::BinaryOp { target, left, op, right } => {
+                    // 使用in_state来解析操作数
+                    if let (Some(left_const), Some(right_const)) = (
+                        self.resolve_operand_to_constant(left, in_state),
+                        self.resolve_operand_to_constant(right, in_state)
+                    ) {
+                        if let Ok(result_const) = self.compute_binary_operation(&left_const, op, &right_const) {
+                            self.update_target_in_state(&mut out_state, target, result_const);
+                            continue;
+                        }
+                    }
+                    // 清除目标变量的常量状态
+                    self.clear_target_in_state(&mut out_state, target);
+                }
+                TACInstruction::UnaryOp { target, op, operand } => {
+                    // 支持一元运算的常量折叠
+                    if let Some(operand_const) = self.resolve_operand_to_constant(operand, in_state) {
+                        if let Ok(result_const) = self.compute_unary_operation(op, &operand_const) {
+                            self.update_target_in_state(&mut out_state, target, result_const);
+                            continue;
+                        }
+                    }
+                    self.clear_target_in_state(&mut out_state, target);
+                }
+                _ => {
+                    // 其他指令清除目标变量的常量状态
+                    if let Some(target) = self.get_instruction_target(instruction) {
+                        self.clear_target_in_state(&mut out_state, &target);
+                    }
+                }
+            }
+        }
+        
+        out_state
+    }
+    
+    /// 更新状态中的目标变量
+    fn update_target_in_state(&self, state: &mut ConstantState, target: &Operand, value: ConstantValue) {
+        match target {
+            Operand::Variable(name) => {
+                state.variable_constants.insert(name.clone(), value);
+            }
+            Operand::Temp(id) => {
+                state.temp_constants.insert(*id, value);
+            }
+            _ => {}
+        }
+    }
+    
+    /// 清除状态中的目标变量
+    fn clear_target_in_state(&self, state: &mut ConstantState, target: &Operand) {
+        match target {
+            Operand::Variable(name) => {
+                state.variable_constants.remove(name);
+            }
+            Operand::Temp(id) => {
+                state.temp_constants.remove(id);
+            }
+            _ => {}
+        }
+    }
+    
+    /// 解析操作数为常量值
+    fn resolve_operand_to_constant(&self, operand: &Operand, state: &ConstantState) -> Option<ConstantValue> {
+        match operand {
+            Operand::Constant(value) => Some(value.clone()),
+            Operand::Temp(id) => state.temp_constants.get(id).cloned(),
+            Operand::Variable(name) => state.variable_constants.get(name).cloned(),
+            _ => None,
+        }
+    }
+    
+    /// 获取指令的目标操作数
+    fn get_instruction_target(&self, instruction: &TACInstruction) -> Option<Operand> {
+        match instruction {
+            TACInstruction::Assign { target, .. } => Some(target.clone()),
+            TACInstruction::BinaryOp { target, .. } => Some(target.clone()),
+            TACInstruction::UnaryOp { target, .. } => Some(target.clone()),
+            TACInstruction::FunctionCall { target, .. } => Some(target.clone()),
+            TACInstruction::GetElementPtr { target, .. } => Some(target.clone()),
+            TACInstruction::Load { target, .. } => Some(target.clone()),
+            TACInstruction::Allocate { target, .. } => Some(target.clone()),
+            _ => None,
+        }
+    }
+    
+    /// 计算二元运算的常量值
+    fn compute_binary_operation(&self, left: &ConstantValue, op: &BinaryOperator, right: &ConstantValue) -> Result<ConstantValue, ConstantOptimizationError> {
+        match (left, op, right) {
+            (ConstantValue::Integer(a), BinaryOperator::Add, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Integer(a + b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Subtract, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Integer(a - b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Multiply, ConstantValue::Integer(b)) => {
+                Ok(ConstantValue::Integer(a * b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Divide, ConstantValue::Integer(b)) => {
+                if *b == 0 {
+                    return Err(ConstantOptimizationError::DivisionByZero);
+                }
+                Ok(ConstantValue::Integer(a / b))
+            }
+            (ConstantValue::Integer(a), BinaryOperator::Modulo, ConstantValue::Integer(b)) => {
+                if *b == 0 {
+                    return Err(ConstantOptimizationError::ModuloByZero);
+                }
+                Ok(ConstantValue::Integer(a % b))
+            }
+            _ => Err(ConstantOptimizationError::UnsupportedOperation(
+                format!("不支持的二元运算: {:?} {:?} {:?}", left, op, right)
+            )),
+        }
+    }
+    
+    /// 计算一元运算的常量值
+    fn compute_unary_operation(&self, op: &UnaryOperator, operand: &ConstantValue) -> Result<ConstantValue, ConstantOptimizationError> {
+        match (op, operand) {
+            (UnaryOperator::Minus, ConstantValue::Integer(a)) => {
+                Ok(ConstantValue::Integer(-a))
+            }
+            (UnaryOperator::Not, ConstantValue::Boolean(a)) => {
+                Ok(ConstantValue::Boolean(!a))
+            }
+            (UnaryOperator::Not, ConstantValue::Integer(a)) => {
+                Ok(ConstantValue::Boolean(*a == 0))
+            }
+            (UnaryOperator::BitwiseNot, ConstantValue::Integer(a)) => {
+                Ok(ConstantValue::Integer(!a))
+            }
+            _ => Err(ConstantOptimizationError::UnsupportedOperation(
+                format!("不支持的一元运算: {:?} {:?}", op, operand)
+            )),
+        }
+    }
+}
+
+/// 常量优化Pass
+/// 基于正确数据流分析的智能常量传播和折叠算法
+pub struct ConstantOptimizationPass {
+    stats: OptimizationStats,
+    /// 全局常量映射
+    global_constants: HashMap<String, ConstantValue>,
+    /// 当前基本块的常量状态
+    variable_constants: HashMap<String, ConstantValue>,
+    temp_constants: HashMap<usize, ConstantValue>,
+    /// 常量折叠统计
+    constant_foldings: usize,
+    /// 常量传播统计
+    constant_propagations: usize,
+}
+
+impl ConstantOptimizationPass {
+    pub fn new() -> Self {
+        Self {
+            stats: OptimizationStats::new(),
+            global_constants: HashMap::new(),
+            variable_constants: HashMap::new(),
+            temp_constants: HashMap::new(),
+            constant_foldings: 0,
+            constant_propagations: 0,
+        }
+    }
+    
+    /// 运行常量优化 - 支持多轮优化处理链式依赖
+    pub fn run(&mut self, program: &mut TACProgram) -> Result<OptimizationResult, String> {
+        println!("🚀 开始常量优化...");
+        
+        let mut result = OptimizationResult::new();
+        let mut total_optimizations = 0;
+        let mut round = 0;
+        const MAX_ROUNDS: usize = 5; // 支持多轮优化
+        
+        // 1. 初始化全局常量
+        self.initialize_global_constants(program);
+        
+        // 2. 多轮优化，处理链式依赖
+        while round < MAX_ROUNDS {
+            let mut round_optimizations = 0;
+            round += 1;
+            
+            println!("🔄 第 {} 轮常量优化...", round);
+            
+            // 对每个函数进行优化
+            for function in &mut program.functions {
+                // 执行数据流分析
+                let mut dataflow = DataFlowAnalysis::new();
+                dataflow.analyze_with_worklist(function, &self.global_constants)?;
+                
+                // 基于数据流分析结果优化每个基本块
+                for block in &mut function.basic_blocks {
+                    // 获取基本块的入口常量状态
+                    let in_state = dataflow.in_states.get(&block.id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            let mut state = ConstantState::new();
+                            state.variable_constants = self.global_constants.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            state
+                        });
+                    
+                    // 优化基本块（使用入口状态）
+                    let optimizations = self.optimize_block_with_state(block, &in_state)?;
+                    round_optimizations += optimizations;
+                }
+            }
+            
+            total_optimizations += round_optimizations;
+            println!("✅ 第 {} 轮完成，优化 {} 条指令", round, round_optimizations);
+            
+            // 如果没有新的优化，说明已经收敛
+            if round_optimizations == 0 {
+                println!("🎯 优化收敛，在第 {} 轮停止", round);
+                break;
+            }
+        }
+        
+        // 显示优化结果
+        println!("✅ 常量优化完成");
+        println!("   🧮 常量折叠: {} 次", self.constant_foldings);
+        println!("   📊 常量传播: {} 次", self.constant_propagations);
+        println!("   📈 总优化指令: {} 条", total_optimizations);
+        println!("   🔄 优化轮次: {} 轮", round);
+        
         // 更新统计信息
-        self.stats.constant_foldings = total_optimizations;
+        self.stats.constant_foldings = self.constant_foldings;
         self.stats.optimization_rounds = round;
         
-        // 标记优化结果
         if total_optimizations > 0 {
             result.mark_optimized();
             result.instructions_optimized = total_optimizations;
@@ -98,296 +483,143 @@ impl ConstantOptimizationPass {
         Ok(result)
     }
     
-        /// 分析和优化基本块
-    fn analyze_and_optimize_block(&mut self, block: &mut BasicBlock) -> Result<usize, String> {
+    /// 初始化全局常量
+    fn initialize_global_constants(&mut self, program: &TACProgram) {
+        for (var_name, var_type, initial_value) in &program.global_variables {
+            if let Some(operand) = initial_value {
+                if let Operand::Constant(constant_value) = operand {
+                    self.global_constants.insert(var_name.clone(), constant_value.clone());
+                    println!("🔧 初始化全局常量: {} = {:?}", var_name, constant_value);
+                }
+            }
+        }
+    }
+    
+    /// 使用指定状态优化基本块
+    fn optimize_block_with_state(&mut self, block: &mut BasicBlock, in_state: &ConstantState) -> Result<usize, String> {
         let mut optimizations = 0;
         let mut i = 0;
         
         while i < block.instructions.len() {
             let instruction = block.instructions[i].clone();
             
-            // 尝试常量折叠
-            if let Some(folded_instruction) = self.try_constant_folding(&instruction)? {
-                block.instructions[i] = folded_instruction;
+            // 使用入口状态来尝试优化（不是当前状态！）
+            if let Some(folded) = self.try_constant_folding_with_state(&instruction, &in_state.variable_constants, &in_state.temp_constants)? {
+                let folded_clone = folded.clone();
+                block.instructions[i] = folded;
                 optimizations += 1;
+                self.constant_foldings += 1;
+                println!("🧮 常量折叠: {:?} -> {:?}", instruction, folded_clone);
             }
-            // 尝试消除临时变量
-            else if let Some(optimized_instruction) = self.try_temp_elimination(&instruction)? {
-                block.instructions[i] = optimized_instruction;
+            else if let Some(propagated) = self.try_constant_propagation_with_state(&instruction, &in_state.variable_constants, &in_state.temp_constants)? {
+                let propagated_clone = propagated.clone();
+                block.instructions[i] = propagated;
                 optimizations += 1;
+                self.constant_propagations += 1;
+                println!("📊 常量传播: {:?} -> {:?}", instruction, propagated_clone);
             }
             
-            // 更新常量映射
+            // 更新当前状态（用于后续指令）
             self.update_constants_from_instruction(&block.instructions[i]);
-            
             i += 1;
         }
         
-        // 死代码消除（需要单独处理，因为会改变指令数量）
-        let dead_code_eliminations = self.eliminate_dead_code(block)?;
-        optimizations += dead_code_eliminations;
+        // 死代码消除
+        optimizations += self.eliminate_dead_code(block)?;
         
         Ok(optimizations)
     }
     
-    /// 执行死代码消除
-    fn eliminate_dead_code(&self, block: &mut BasicBlock) -> Result<usize, String> {
-        let mut eliminations = 0;
-        let mut i = 0;
-        
-        while i < block.instructions.len() {
-            if let Some(dead_index) = self.try_dead_code_elimination(&block.instructions, i)? {
-                // 删除死代码指令
-                block.instructions.remove(dead_index);
-                eliminations += 1;
-                // 不需要增加i，因为后面的指令会前移
-            } else {
-                i += 1;
-            }
-        }
-        
-        Ok(eliminations)
-    }
-    
-    /// 从指令更新常量映射
-    fn update_constants_from_instruction(&mut self, instruction: &TACInstruction) {
-        match instruction {
-            TACInstruction::Assign { target, source } => {
-                // 如果右值是常量，更新映射
-                if let Operand::Constant(value) = source {
-                    match target {
-                        Operand::Variable(name) => {
-                            self.variable_constants.insert(name.clone(), value.clone());
-                        }
-                        Operand::Temp(id) => {
-                            self.temp_constants.insert(*id, value.clone());
-                        }
-                        _ => {}
-                    }
-                }
-                // 如果右值可解析为常量，更新映射
-                else if let Some(constant_value) = self.resolve_operand_to_constant(source).unwrap_or(None) {
-                    match target {
-                        Operand::Variable(name) => {
-                            self.variable_constants.insert(name.clone(), constant_value);
-                        }
-                        Operand::Temp(id) => {
-                            self.temp_constants.insert(*id, constant_value);
-                        }
-                        _ => {}
-                    }
-                } else {
-                    // 不可解析为常量：杀掉原有的常量映射，避免陈旧常量污染
-                    match target {
-                        Operand::Variable(name) => {
-                            self.variable_constants.remove(name);
-                        }
-                        Operand::Temp(id) => {
-                            self.temp_constants.remove(id);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            // 这些指令写入目标，但当前无法确定为常量：统一执行 kill
-            TACInstruction::BinaryOp { target, .. }
-            | TACInstruction::UnaryOp { target, .. }
-            | TACInstruction::FunctionCall { target, .. }
-            | TACInstruction::GetElementPtr { target, .. }
-            | TACInstruction::Load { target, .. }
-            | TACInstruction::Allocate { target, .. } => {
-                match target {
-                    Operand::Variable(name) => {
-                        self.variable_constants.remove(name);
-                    }
-                    Operand::Temp(id) => {
-                        self.temp_constants.remove(id);
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-    
-    /// 尝试常量折叠
-    fn try_constant_folding(&self, instruction: &TACInstruction) -> Result<Option<TACInstruction>, String> {
+    /// 使用指定状态进行常量折叠 - 支持更多类型
+    fn try_constant_folding_with_state(
+        &self, 
+        instruction: &TACInstruction, 
+        variable_constants: &HashMap<String, ConstantValue>,
+        temp_constants: &HashMap<usize, ConstantValue>
+    ) -> Result<Option<TACInstruction>, String> {
         match instruction {
             TACInstruction::BinaryOp { target, left, op, right } => {
-                // 检查左右操作数是否都是常量，或者可以解析为常量
-                let left_val = self.resolve_operand_to_constant(left)?;
-                let right_val = self.resolve_operand_to_constant(right)?;
+                let left_const = self.resolve_operand_to_constant_with_state(left, variable_constants, temp_constants)?;
+                let right_const = self.resolve_operand_to_constant_with_state(right, variable_constants, temp_constants)?;
                 
-                if let (Some(left_const), Some(right_const)) = (left_val, right_val) {
-                    // 执行常量折叠
-                    let result_value = self.compute_binary_operation(&left_const, op, &right_const)?;
-                    
-                    // 创建新的赋值指令
-                    let folded_instruction = TACInstruction::Assign {
+                if let (Some(left_val), Some(right_val)) = (left_const, right_const) {
+                    let result = self.compute_binary_operation(&left_val, op, &right_val)?;
+                    Ok(Some(TACInstruction::Assign {
                         target: target.clone(),
-                        source: Operand::Constant(result_value),
-                    };
-                    
-                    Ok(Some(folded_instruction))
+                        source: Operand::Constant(result),
+                    }))
                 } else {
-                    // 至少有一个不是常量：如果这是条件相关的比较运算，避免错误地把控制流条件变成常量
-                    // 不做替换，保持原指令
                     Ok(None)
                 }
             }
-            
             TACInstruction::UnaryOp { target, op, operand } => {
-                // 检查操作数是否是常量，或者可以解析为常量
-                let operand_val = self.resolve_operand_to_constant(operand)?;
-                
-                if let Some(operand_const) = operand_val {
-                    // 执行常量折叠
-                    let result_value = self.compute_unary_operation(op, &operand_const)?;
-                    
-                    // 创建新的赋值指令
-                    let folded_instruction = TACInstruction::Assign {
+                // 支持一元运算的常量折叠
+                if let Some(operand_const) = self.resolve_operand_to_constant_with_state(operand, variable_constants, temp_constants)? {
+                    let result = self.compute_unary_operation(op, &operand_const)?;
+                    Ok(Some(TACInstruction::Assign {
                         target: target.clone(),
-                        source: Operand::Constant(result_value),
-                    };
-                    
-                    Ok(Some(folded_instruction))
+                        source: Operand::Constant(result),
+                    }))
                 } else {
-                    // 不是常量：保持原指令
                     Ok(None)
                 }
             }
-            
             _ => Ok(None),
         }
     }
     
-    /// 尝试消除临时变量（当临时变量只被使用一次时）
-    fn try_temp_elimination(&self, instruction: &TACInstruction) -> Result<Option<TACInstruction>, String> {
+    /// 使用指定状态进行常量传播
+    fn try_constant_propagation_with_state(
+        &self, 
+        instruction: &TACInstruction, 
+        variable_constants: &HashMap<String, ConstantValue>,
+        temp_constants: &HashMap<usize, ConstantValue>
+    ) -> Result<Option<TACInstruction>, String> {
         match instruction {
             TACInstruction::Assign { target, source } => {
-                // 如果目标是变量，源是临时变量，且临时变量是已知常量
-                if let Operand::Variable(_) = target {
-                    if let Operand::Temp(temp_id) = source {
-                        if let Some(constant_value) = self.temp_constants.get(temp_id) {
-                            // 直接替换为常量赋值
-                            let optimized_instruction = TACInstruction::Assign {
-                                target: target.clone(),
-                                source: Operand::Constant(constant_value.clone()),
-                            };
-                            return Ok(Some(optimized_instruction));
-                        }
-                    }
+                // 如果源操作数是常量，直接传播
+                if let Operand::Constant(const_val) = source {
+                    return Ok(Some(TACInstruction::Assign {
+                        target: target.clone(),
+                        source: Operand::Constant(const_val.clone()),
+                    }));
                 }
+                
+                // 如果源操作数是已知的常量变量或临时变量
+                if let Some(const_val) = self.resolve_operand_to_constant_with_state(source, variable_constants, temp_constants)? {
+                    return Ok(Some(TACInstruction::Assign {
+                        target: target.clone(),
+                        source: Operand::Constant(const_val),
+                    }));
+                }
+                
                 Ok(None)
             }
             _ => Ok(None),
         }
     }
     
-    /// 尝试死代码消除（删除冗余赋值）
-    fn try_dead_code_elimination(&self, instructions: &[TACInstruction], current_index: usize) -> Result<Option<usize>, String> {
-        let current_instruction = &instructions[current_index];
-        
-        match current_instruction {
-            TACInstruction::Assign { target, .. } => {
-                // 检查后续指令是否覆盖了这个目标
-                for i in (current_index + 1)..instructions.len() {
-                    let next_instruction = &instructions[i];
-                    match next_instruction {
-                        TACInstruction::Assign { target: next_target, .. } => {
-                            if target == next_target {
-                                // 找到覆盖，但需要检查中间是否有使用
-                                if !self.is_variable_used_between(instructions, current_index + 1, i, target)? {
-                                    // 只有在中间没有被使用的情况下才删除
-                                    return Ok(Some(current_index));
-                                }
-                                // 如果中间被使用了，不能删除
-                                break;
-                            }
-                        }
-                        TACInstruction::Return { .. } => {
-                            // 到达return，不再有覆盖
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                Ok(None)
-            }
+    /// 使用指定状态解析操作数
+    fn resolve_operand_to_constant_with_state(
+        &self, 
+        operand: &Operand, 
+        variable_constants: &HashMap<String, ConstantValue>,
+        temp_constants: &HashMap<usize, ConstantValue>
+    ) -> Result<Option<ConstantValue>, String> {
+        match operand {
+            Operand::Constant(value) => Ok(Some(value.clone())),
+            Operand::Temp(id) => Ok(temp_constants.get(id).cloned()),
+            Operand::Variable(name) => Ok(variable_constants.get(name).cloned()),
             _ => Ok(None),
         }
     }
     
-    /// 检查变量在两个位置之间是否被使用
-    fn is_variable_used_between(&self, instructions: &[TACInstruction], start: usize, end: usize, target: &Operand) -> Result<bool, String> {
-        for i in start..end {
-            let instruction = &instructions[i];
-            if self.instruction_uses_operand(instruction, target)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-    
-    /// 检查指令是否使用了指定的操作数
-    fn instruction_uses_operand(&self, instruction: &TACInstruction, operand: &Operand) -> Result<bool, String> {
-        match instruction {
-            TACInstruction::Assign { source, .. } => {
-                Ok(source == operand)
-            }
-            TACInstruction::BinaryOp { left, right, .. } => {
-                Ok(left == operand || right == operand)
-            }
-            TACInstruction::UnaryOp { operand: op_operand, .. } => {
-                Ok(op_operand == operand)
-            }
-            TACInstruction::Store { value, address } => {
-                Ok(value == operand || address == operand)
-            }
-            TACInstruction::Load { address, .. } => {
-                Ok(address == operand)
-            }
-            TACInstruction::Allocate { size, .. } => {
-                Ok(size == operand)
-            }
-            TACInstruction::GetElementPtr { base, indices, .. } => {
-                Ok(base == operand || indices.iter().any(|idx| idx == operand))
-            }
-            TACInstruction::FunctionCall { arguments, .. } => {
-                Ok(arguments.iter().any(|arg| arg == operand))
-            }
-            TACInstruction::Return { value } => {
-                if let Some(ret_value) = value {
-                    Ok(ret_value == operand)
-                } else {
-                    Ok(false)
-                }
-            }
-            TACInstruction::ConditionalJump { condition, .. } => {
-                Ok(condition == operand)
-            }
-            TACInstruction::Jump { .. } => Ok(false),
-            TACInstruction::Label { .. } => Ok(false),
-            TACInstruction::Param { value } => {
-                Ok(value == operand)
-            }
-            TACInstruction::FunctionStart { .. } => Ok(false),
-            TACInstruction::FunctionEnd => Ok(false),
-        }
-    }
-    
-    /// 尝试将操作数解析为常量值
+    /// 解析操作数为常量值（使用当前状态）
     fn resolve_operand_to_constant(&self, operand: &Operand) -> Result<Option<ConstantValue>, String> {
         match operand {
             Operand::Constant(value) => Ok(Some(value.clone())),
-            Operand::Temp(id) => {
-                // 查找临时变量的常量值
-                Ok(self.temp_constants.get(id).cloned())
-            }
-            Operand::Variable(name) => {
-                // 查找变量的常量值
-                Ok(self.variable_constants.get(name).cloned())
-            }
+            Operand::Temp(id) => Ok(self.temp_constants.get(id).cloned()),
+            Operand::Variable(name) => Ok(self.variable_constants.get(name).cloned()),
             Operand::Label(_) => Ok(None),
         }
     }
@@ -416,95 +648,6 @@ impl ConstantOptimizationPass {
                 }
                 Ok(ConstantValue::Integer(a % b))
             }
-            // 布尔值和整数的算术运算
-            (ConstantValue::Boolean(a), BinaryOperator::Add, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } + b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Add, ConstantValue::Boolean(b)) => {
-                Ok(ConstantValue::Integer(a + if *b { 1 } else { 0 }))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::Subtract, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } - b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Subtract, ConstantValue::Boolean(b)) => {
-                Ok(ConstantValue::Integer(a - if *b { 1 } else { 0 }))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::Multiply, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } * b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Multiply, ConstantValue::Boolean(b)) => {
-                Ok(ConstantValue::Integer(a * if *b { 1 } else { 0 }))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::Divide, ConstantValue::Integer(b)) => {
-                if *b == 0 {
-                    return Err("除零错误".to_string());
-                }
-                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } / b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Divide, ConstantValue::Boolean(b)) => {
-                let b_val = if *b { 1 } else { 0 };
-                if b_val == 0 {
-                    return Err("除零错误".to_string());
-                }
-                Ok(ConstantValue::Integer(a / b_val))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::Modulo, ConstantValue::Integer(b)) => {
-                if *b == 0 {
-                    return Err("模零错误".to_string());
-                }
-                Ok(ConstantValue::Integer(if *a { 1 } else { 0 } % b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Modulo, ConstantValue::Boolean(b)) => {
-                let b_val = if *b { 1 } else { 0 };
-                if b_val == 0 {
-                    return Err("模零错误".to_string());
-                }
-                Ok(ConstantValue::Integer(a % b_val))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Equal, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(a == b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::NotEqual, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(a != b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Less, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(a < b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::LessEqual, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(a <= b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Greater, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(a > b))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::GreaterEqual, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(a >= b))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::And, ConstantValue::Boolean(b)) => {
-                Ok(ConstantValue::Boolean(*a && *b))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::Or, ConstantValue::Boolean(b)) => {
-                Ok(ConstantValue::Boolean(*a || *b))
-            }
-            // 整数和布尔值的逻辑运算
-            (ConstantValue::Integer(a), BinaryOperator::And, ConstantValue::Boolean(b)) => {
-                Ok(ConstantValue::Boolean(*a != 0 && *b))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::And, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(*a && *b != 0))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Or, ConstantValue::Boolean(b)) => {
-                Ok(ConstantValue::Boolean(*a != 0 || *b))
-            }
-            (ConstantValue::Boolean(a), BinaryOperator::Or, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(*a || *b != 0))
-            }
-            // 整数和整数的逻辑运算
-            (ConstantValue::Integer(a), BinaryOperator::And, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(*a != 0 && *b != 0))
-            }
-            (ConstantValue::Integer(a), BinaryOperator::Or, ConstantValue::Integer(b)) => {
-                Ok(ConstantValue::Boolean(*a != 0 || *b != 0))
-            }
             _ => Err("不支持的二元运算类型组合".to_string()),
         }
     }
@@ -528,12 +671,179 @@ impl ConstantOptimizationPass {
         }
     }
     
-
+    /// 从指令更新常量映射
+    fn update_constants_from_instruction(&mut self, instruction: &TACInstruction) {
+        match instruction {
+            TACInstruction::Assign { target, source } => {
+                if let Operand::Constant(value) = source {
+                    self.update_target_constant(target, value.clone());
+                } else if let Some(constant_value) = self.resolve_operand_to_constant(source).unwrap_or(None) {
+                    self.update_target_constant(target, constant_value);
+                } else {
+                    self.kill_target_constant(target);
+                }
+            }
+            TACInstruction::BinaryOp { target, left, op, right } => {
+                if let (Some(left_const), Some(right_const)) = (
+                    self.resolve_operand_to_constant(left).unwrap_or(None),
+                    self.resolve_operand_to_constant(right).unwrap_or(None)
+                ) {
+                    if let Ok(result_const) = self.compute_binary_operation(&left_const, op, &right_const) {
+                        self.update_target_constant(target, result_const);
+                        return;
+                    }
+                }
+                self.kill_target_constant(target);
+            }
+            _ => {
+                if let Some(target) = self.get_instruction_target(instruction) {
+                    self.kill_target_constant(&target);
+                }
+            }
+        }
+    }
+    
+    /// 更新目标操作数的常量值
+    fn update_target_constant(&mut self, target: &Operand, constant_value: ConstantValue) {
+        match target {
+            Operand::Variable(name) => {
+                self.variable_constants.insert(name.clone(), constant_value);
+            }
+            Operand::Temp(id) => {
+                self.temp_constants.insert(*id, constant_value);
+            }
+            _ => {}
+        }
+    }
+    
+    /// 清除目标操作数的常量值
+    fn kill_target_constant(&mut self, target: &Operand) {
+        match target {
+            Operand::Variable(name) => {
+                self.variable_constants.remove(name);
+            }
+            Operand::Temp(id) => {
+                self.temp_constants.remove(id);
+            }
+            _ => {}
+        }
+    }
+    
+    /// 获取指令的目标操作数
+    fn get_instruction_target(&self, instruction: &TACInstruction) -> Option<Operand> {
+        match instruction {
+            TACInstruction::Assign { target, .. } => Some(target.clone()),
+            TACInstruction::BinaryOp { target, .. } => Some(target.clone()),
+            TACInstruction::UnaryOp { target, .. } => Some(target.clone()),
+            TACInstruction::FunctionCall { target, .. } => Some(target.clone()),
+            TACInstruction::GetElementPtr { target, .. } => Some(target.clone()),
+            TACInstruction::Load { target, .. } => Some(target.clone()),
+            TACInstruction::Allocate { target, .. } => Some(target.clone()),
+            _ => None,
+        }
+    }
+    
+    /// 死代码消除
+    fn eliminate_dead_code(&self, block: &mut BasicBlock) -> Result<usize, String> {
+        let mut eliminations = 0;
+        let mut i = 0;
+        
+        while i < block.instructions.len() {
+            let instruction = &block.instructions[i];
+            
+            // 检查是否是死代码（赋值给临时变量但后续没有被使用）
+            if self.is_dead_assignment(instruction, block, i) {
+                println!("🗑️ 删除死代码: {:?}", instruction);
+                block.instructions.remove(i);
+                eliminations += 1;
+            } else {
+                i += 1;
+            }
+        }
+        
+        Ok(eliminations)
+    }
+    
+    /// 检查是否是死赋值
+    fn is_dead_assignment(&self, instruction: &TACInstruction, block: &BasicBlock, current_index: usize) -> bool {
+        match instruction {
+            TACInstruction::Assign { target, .. } => {
+                // 只检查临时变量的死赋值
+                if let Operand::Temp(target_id) = target {
+                    // 检查后续指令是否使用这个临时变量
+                    for j in (current_index + 1)..block.instructions.len() {
+                        let next_instruction = &block.instructions[j];
+                        if self.instruction_uses_temp(next_instruction, *target_id) {
+                            return false; // 被使用了，不是死代码
+                        }
+                    }
+                    return true; // 没有被使用，是死代码
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+    
+    /// 检查指令是否使用指定的临时变量
+    fn instruction_uses_temp(&self, instruction: &TACInstruction, temp_id: usize) -> bool {
+        match instruction {
+            TACInstruction::Assign { source, .. } => {
+                if let Operand::Temp(id) = source {
+                    return *id == temp_id;
+                }
+            }
+            TACInstruction::BinaryOp { left, right, .. } => {
+                if let Operand::Temp(id) = left {
+                    if *id == temp_id {
+                        return true;
+                    }
+                }
+                if let Operand::Temp(id) = right {
+                    if *id == temp_id {
+                        return true;
+                    }
+                }
+            }
+            TACInstruction::UnaryOp { operand, .. } => {
+                if let Operand::Temp(id) = operand {
+                    return *id == temp_id;
+                }
+            }
+            TACInstruction::FunctionCall { arguments, .. } => {
+                for arg in arguments {
+                    if let Operand::Temp(id) = arg {
+                        if *id == temp_id {
+                            return true;
+                        }
+                    }
+                }
+            }
+            TACInstruction::Return { value } => {
+                if let Some(val) = value {
+                    if let Operand::Temp(id) = val {
+                        return *id == temp_id;
+                    }
+                }
+            }
+            _ => {}
+        }
+        false
+    }
 }
 
 impl OptimizationPass for ConstantOptimizationPass {
     fn run(&mut self, program: &mut crate::TACIR::TACProgram) -> Result<OptimizationResult, String> {
-        self.run(program)
+        // 重置统计和状态
+        self.stats = OptimizationStats::new();
+        self.global_constants.clear();
+        self.variable_constants.clear();
+        self.temp_constants.clear();
+        self.constant_foldings = 0;
+        self.constant_propagations = 0;
+        
+        // 调用优化逻辑
+        self.run_optimization(program)
     }
     
     fn name(&self) -> &str {
@@ -542,5 +852,78 @@ impl OptimizationPass for ConstantOptimizationPass {
     
     fn get_stats(&self) -> &OptimizationStats {
         &self.stats
+    }
+}
+
+impl ConstantOptimizationPass {
+    /// 将原有的run逻辑移到新方法中，避免递归调用
+    fn run_optimization(&mut self, program: &mut TACProgram) -> Result<OptimizationResult, String> {
+        println!("🚀 开始常量优化...");
+        
+        let mut result = OptimizationResult::new();
+        let mut total_optimizations = 0;
+        let mut round = 0;
+        const MAX_ROUNDS: usize = 5; // 支持多轮优化
+        
+        // 1. 初始化全局常量
+        self.initialize_global_constants(program);
+        
+        // 2. 多轮优化，处理链式依赖
+        while round < MAX_ROUNDS {
+            let mut round_optimizations = 0;
+            round += 1;
+            
+            println!("🔄 第 {} 轮常量优化...", round);
+            
+            // 对每个函数进行优化
+            for function in &mut program.functions {
+                // 执行数据流分析
+                let mut dataflow = DataFlowAnalysis::new();
+                dataflow.analyze_with_worklist(function, &self.global_constants)?;
+                
+                // 基于数据流分析结果优化每个基本块
+                for block in &mut function.basic_blocks {
+                    // 获取基本块的入口常量状态
+                    let in_state = dataflow.in_states.get(&block.id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            let mut state = ConstantState::new();
+                            state.variable_constants = self.global_constants.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            state
+                        });
+                    
+                    // 优化基本块（使用入口状态）
+                    let optimizations = self.optimize_block_with_state(block, &in_state)?;
+                    round_optimizations += optimizations;
+                }
+            }
+            
+            total_optimizations += round_optimizations;
+            println!("✅ 第 {} 轮完成，优化 {} 条指令", round, round_optimizations);
+            
+            // 如果没有新的优化，说明已经收敛
+            if round_optimizations == 0 {
+                println!("🎯 优化收敛，在第 {} 轮停止", round);
+                break;
+            }
+        }
+        
+        // 显示优化结果
+        println!("✅ 常量优化完成");
+        println!("   🧮 常量折叠: {} 次", self.constant_foldings);
+        println!("   📊 常量传播: {} 次", self.constant_propagations);
+        println!("   📈 总优化指令: {} 条", total_optimizations);
+        println!("   🔄 优化轮次: {} 轮", round);
+        
+        // 更新统计信息
+        self.stats.constant_foldings = self.constant_foldings;
+        self.stats.optimization_rounds = round;
+        
+        if total_optimizations > 0 {
+            result.mark_optimized();
+            result.instructions_optimized = total_optimizations;
+        }
+        
+        Ok(result)
     }
 }

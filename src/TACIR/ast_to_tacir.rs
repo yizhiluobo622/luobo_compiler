@@ -534,19 +534,21 @@ impl ASTToTACConverter {
                 // 为普通变量声明生成IR指令
                 if let Some(block) = self.context.get_current_block_mut() {
                     // 如果有当前函数，在函数内生成指令
-                    // 如果没有初始值，使用默认值
-                    let default_value = match variable_type {
-                        Type::IntType => Operand::Constant(ConstantValue::Integer(0)),
-                        Type::FloatType => Operand::Constant(ConstantValue::Float(0.0)),
-                        Type::BoolType => Operand::Constant(ConstantValue::Boolean(false)),
-                        Type::CharType => Operand::Constant(ConstantValue::Integer(0)),
-                        _ => Operand::Constant(ConstantValue::Integer(0)),
-                    };
-                    
-                    block.add_instruction(TACInstruction::Assign {
-                        target: var_operand.clone(),
-                        source: default_value,
-                    });
+                    // 只有在没有初始值时才使用默认值
+                    if initial_value.is_none() {
+                        let default_value = match variable_type {
+                            Type::IntType => Operand::Constant(ConstantValue::Integer(0)),
+                            Type::FloatType => Operand::Constant(ConstantValue::Float(0.0)),
+                            Type::BoolType => Operand::Constant(ConstantValue::Boolean(false)),
+                            Type::CharType => Operand::Constant(ConstantValue::Integer(0)),
+                            _ => Operand::Constant(ConstantValue::Integer(0)),
+                        };
+                        
+                        block.add_instruction(TACInstruction::Assign {
+                            target: var_operand.clone(),
+                            source: default_value,
+                        });
+                    }
                 } else {
                     // 全局变量，添加到程序的全局变量列表中
                     let initial_value_operand = if let Some(init_value) = initial_value {
