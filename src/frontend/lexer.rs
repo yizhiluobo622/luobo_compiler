@@ -476,7 +476,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             
-            let num_str: String = self.input.chars().skip(start).take(self.pos - start).collect();
+            let num_str: &str = &self.input[start..self.pos];
             match num_str.parse::<f32>() {
                 Ok(f) => return Token::FloatConst(f),
                 Err(_) => return Token::FloatConst(0.0)
@@ -550,23 +550,20 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 } else if next.is_ascii_digit() && next != '0' {
-                    // 检查是否后面跟着小数点，如果是则按十进制浮点数处理
+                    // 检查是否后面跟着小数点，如果是则按十进制浮点数处理（基于字节安全的前瞻）
                     let mut temp_pos = self.pos + 1; // 跳过 '0'
                     let mut has_dot_after_zero = false;
-                    
-                    // 检查后续字符中是否有小数点
                     while temp_pos < self.input.len() {
-                        let c = self.input.chars().nth(temp_pos);
-                        match c {
-                            Some('.') => {
+                        if let Some(ch) = self.input[temp_pos..].chars().next() {
+                            if ch == '.' {
                                 has_dot_after_zero = true;
                                 break;
+                            } else if ch.is_ascii_digit() {
+                                temp_pos += ch.len_utf8();
+                                continue;
                             }
-                            Some(ch) if ch.is_ascii_digit() => {
-                                temp_pos += 1;
-                            }
-                            _ => break,
                         }
+                        break;
                     }
                     
                     if has_dot_after_zero {
@@ -585,7 +582,7 @@ impl<'a> Lexer<'a> {
                             }
                         }
                         
-                        let oct_str: String = self.input.chars().skip(start).take(self.pos - start).collect();
+                        let oct_str: &str = &self.input[start..self.pos];
                         match i32::from_str_radix(&oct_str[1..], 8) {
                             Ok(i) => return Token::IntConst(i),
                             Err(_) => return Token::IntConst(0),
@@ -634,7 +631,7 @@ impl<'a> Lexer<'a> {
             }
         }
         
-        let num_str: String = self.input.chars().skip(start).take(self.pos - start).collect();
+        let num_str: &str = &self.input[start..self.pos];
 
         if has_dot || has_e {
             // 尝试解析为浮点数 f32

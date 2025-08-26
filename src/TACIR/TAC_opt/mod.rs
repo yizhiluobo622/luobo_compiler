@@ -97,9 +97,15 @@ pub fn run_all_optimizations(program: &mut crate::TACIR::TACProgram) -> Result<V
     results.push(constant_result);
     
     // 运行代数优化
-    // let mut algebraic_pass = algebraic_opt::AlgebraicOptimizationPass::new();
-    // let algebraic_result = algebraic_pass.run(program)?;
-    // results.push(algebraic_result);
+    println!("=== 开始代数优化 ===");
+    let mut algebraic_pass = algebraic_opt::AlgebraicOptimizationPass::new();
+    let algebraic_result = algebraic_pass.run(program)?;
+    results.push(algebraic_result);
+    
+    // 打印代数优化统计信息
+    let algebraic_stats = algebraic_pass.get_stats();
+    println!("📊 代数优化统计:");
+    println!("   - 代数优化: {} 次", algebraic_stats.algebraic_optimizations);
     
     Ok(results)
 }
