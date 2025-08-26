@@ -60,6 +60,18 @@ impl StmtChecker {
                             self.check_statement(else_stmt, symbol_table, type_system, errors);
                         }
                     }
+                    Statement::ElseIf { condition, then_branch, else_branch } => {
+                        // 检查条件表达式类型
+                        self.check_condition_expression(condition, symbol_table, type_system, errors);
+                        
+                        // 检查then分支
+                        self.check_statement(then_branch, symbol_table, type_system, errors);
+                        
+                        // 检查else分支（如果存在）
+                        if let Some(else_stmt) = else_branch {
+                            self.check_statement(else_stmt, symbol_table, type_system, errors);
+                        }
+                    }
                     Statement::While { condition, body } => {
                         // 检查循环条件表达式类型
                         self.check_condition_expression(condition, symbol_table, type_system, errors);

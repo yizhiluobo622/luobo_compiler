@@ -587,6 +587,7 @@ impl<'a> Parser<'a> {
     /// 解析if语句
     /// 
     /// 格式：if (条件) 语句1 [else 语句2]
+    /// 支持else if链式结构
     /// 
     /// # 返回
     /// * `Ok(Ast)` - 解析成功，返回if语句AST节点
@@ -631,10 +632,18 @@ impl<'a> Parser<'a> {
         
         let then_branch = Box::new(self.parse_statement()?);
         
-        // 可选的else分支
+        // 可选的else分支，支持else if链式结构
         let else_branch = if let Token::KeywordElse = self.current_token.token {
             self.advance_to_next_token();
-            Some(Box::new(self.parse_statement()?))
+            
+            // 检查是否是else if结构
+            if let Token::KeywordIf = self.current_token.token {
+                // 解析else if，生成专门的ElseIf节点
+                Some(Box::new(self.parse_else_if_chain()?))
+            } else {
+                // 普通的else分支
+                Some(Box::new(self.parse_statement()?))
+            }
         } else {
             None
         };
@@ -646,6 +655,76 @@ impl<'a> Parser<'a> {
                 else_branch,
             }),
             self.create_span_from_to(&if_start_span, &self.current_token.span)
+        ))
+    }
+    
+    /// 解析else if链式结构
+    /// 
+    /// 格式：else if (条件) 语句1 [else if (条件) 语句2 ...] [else 语句n]
+    /// 
+    /// # 返回
+    /// * `Ok(Ast)` - 解析成功，返回else if链式结构AST节点
+    /// * `Err(Vec<ParseError>)` - 解析失败
+    fn parse_else_if_chain(&mut self) -> Result<Ast, Vec<ParseError>> {
+        let else_if_start_span = self.current_token.span.clone();
+        self.expect_token(Token::KeywordIf)?;
+        
+        // 检查是否缺少左括号
+        if !matches!(self.current_token.token, Token::LParen) {
+            let error_span = self.current_token.span.clone();
+            let error = ParseError {
+                message: "else if缺少左括号".to_string(),
+                span: error_span,
+            };
+            return Err(vec![error]);
+        } else {
+            self.advance_to_next_token(); // 跳过左括号
+        }
+        
+        let condition = Box::new(self.parse_expression()?);
+        
+        // 检查是否缺少右括号
+        if !matches!(self.current_token.token, Token::RParen) {
+            let error_span = Span::new(
+                self.current_token.span.file_id,
+                self.current_token.span.line,
+                self.current_token.span.column,
+                condition.span.end_pos,
+                self.current_token.span.end_pos,
+            );
+            let error = ParseError {
+                message: "else if缺少右括号".to_string(),
+                span: error_span,
+            };
+            return Err(vec![error]);
+        } else {
+            self.advance_to_next_token(); // 跳过右括号
+        }
+        
+        let then_branch = Box::new(self.parse_statement()?);
+        
+        // 检查是否还有更多的else if
+        let else_branch = if let Token::KeywordElse = self.current_token.token {
+            self.advance_to_next_token();
+            
+            if let Token::KeywordIf = self.current_token.token {
+                // 继续解析else if链
+                Some(Box::new(self.parse_else_if_chain()?))
+            } else {
+                // 最终的else分支
+                Some(Box::new(self.parse_statement()?))
+            }
+        } else {
+            None
+        };
+        
+        Ok(Ast::new(
+            AstKind::Statement(Statement::ElseIf {
+                condition,
+                then_branch,
+                else_branch,
+            }),
+            self.create_span_from_to(&else_if_start_span, &self.current_token.span)
         ))
     }
     

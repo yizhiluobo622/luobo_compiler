@@ -425,6 +425,16 @@ impl TACFunction {
     pub fn get_basic_block_mut(&mut self, id: usize) -> Option<&mut BasicBlock> {
         self.basic_blocks.iter_mut().find(|block| block.id == id)
     }
+    
+    /// 生成下一个基本块ID
+    pub fn next_block_id(&mut self) -> usize {
+        let next_id = if self.basic_blocks.is_empty() {
+            0
+        } else {
+            self.basic_blocks.iter().map(|block| block.id).max().unwrap() + 1
+        };
+        next_id
+    }
 }
 
 impl fmt::Display for TACFunction {

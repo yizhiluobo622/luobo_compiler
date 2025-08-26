@@ -4,7 +4,9 @@
 pub mod tests {
     use crate::frontend::lexer::Lexer;
     use crate::frontend::parser::Parser;
+    use crate::frontend::ast::AstKind;
     use crate::frontend::semantic_analysis::analyze_ast_with_semantic_info;
+    use crate::frontend::debug::debug_parser::show_ast_dot;
     use crate::TACIR;
     use crate::TACIR::TAC_opt::OptimizationPass;
 
@@ -21,8 +23,16 @@ pub mod tests {
         let mut parser = Parser::new(lexer);
         let ast = parser.parse().expect("Parser failed");
         
+        // 生成AST DOT图来查看结构
+        println!("=== 生成AST DOT图 ===");
+        show_ast_dot(&ast, "test_000_1_ast.dot");
+        
         // Semantic Analysis
         let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
+        
+        // 生成语义分析后的AST DOT图
+        println!("\n=== 生成语义分析后的AST DOT图 ===");
+        show_ast_dot(&annotated_ast, "test_000_1_semantic_ast.dot");
         
         // TAC IR转换
         println!("=== 开始TAC IR转换 ===");
@@ -56,14 +66,22 @@ pub mod tests {
                                 .sum();
                             println!("总指令数: {}", total_instructions);
                         }
+                        
+                        // 输出完整的优化后IR
+                        println!("\n=== 完整优化后IR ===");
+                        println!("{}", tac_program);
                     }
                     Err(e) => {
                         println!("❌ 优化流水线失败: {}", e);
                     }
                 }
+                
+                // 如果优化失败，输出未优化的IR作为备选
+                // println!("\n=== 转换后的IR（未优化） ===");
+                // println!("{}", tac_program);
             }
             Err(e) => {
-                println!("❌ TAC IR转换失败: {}", e);
+                println!("❌ TAC IR转换失败: {:?}", e);
                 panic!("TAC IR转换失败");
             }
         }
@@ -71,7 +89,14 @@ pub mod tests {
     
     /// 简洁验证TAC IR的正确性
     fn validate_tac_ir(program: &TACIR::TACProgram) {
+        // 先打印一些调试信息
+        println!("程序包含 {} 个函数", program.functions.len());
+        for (i, func) in program.functions.iter().enumerate() {
+            println!("函数 {}: '{}' 有 {} 个基本块", i, func.name, func.basic_blocks.len());
+        }
+        
         if let Some(main_func) = program.get_main_function() {
+            println!("找到main函数，有 {} 个基本块", main_func.basic_blocks.len());
             assert!(!main_func.basic_blocks.is_empty(), "main函数必须有基本块");
             assert!(!main_func.basic_blocks[0].instructions.is_empty(), "基本块必须有指令");
             println!("✅ IR验证通过");

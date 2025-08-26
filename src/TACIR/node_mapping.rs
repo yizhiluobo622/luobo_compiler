@@ -93,6 +93,16 @@ impl NodeMapper {
             label_mappings: self.label_map.len(),
         }
     }
+    
+    /// 获取所有变量映射
+    pub fn get_all_variables(&self) -> HashMap<String, Operand> {
+        self.variable_map.clone()
+    }
+    
+    /// 恢复变量映射
+    pub fn restore_variables(&mut self, variables: HashMap<String, Operand>) {
+        self.variable_map = variables;
+    }
 }
 
 /// 映射统计信息

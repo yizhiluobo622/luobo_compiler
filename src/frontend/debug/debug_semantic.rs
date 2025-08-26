@@ -125,6 +125,7 @@ fn get_simple_label(kind: &AstKind) -> String {
             Statement::ExpressionStatement { .. } => "ExprStmt".to_string(),
             Statement::Return { .. } => "Return".to_string(),
             Statement::If { .. } => "If".to_string(),
+            Statement::ElseIf { .. } => "ElseIf".to_string(),
             Statement::While { .. } => "While".to_string(),
             Statement::For { .. } => "For".to_string(),
             Statement::Break => "Break".to_string(),
@@ -169,6 +170,7 @@ fn get_node_type(kind: &AstKind) -> String {
             Statement::ExpressionStatement { .. } => "ExpressionStatement".to_string(),
             Statement::Return { .. } => "ReturnStatement".to_string(),
             Statement::If { .. } => "IfStatement".to_string(),
+            Statement::ElseIf { .. } => "ElseIfStatement".to_string(),
             Statement::While { .. } => "WhileStatement".to_string(),
             Statement::For { .. } => "ForStatement".to_string(),
             Statement::Break => "BreakStatement".to_string(),
@@ -229,6 +231,13 @@ fn get_direct_children<'a>(ast: &'a Ast) -> Vec<&'a Ast> {
         AstKind::Statement(Statement::ExpressionStatement { expression }) => vec![expression.as_ref()],
         AstKind::Statement(Statement::Return { value }) => value.as_ref().map(|b| b.as_ref()).into_iter().collect(),
         AstKind::Statement(Statement::If { condition, then_branch, else_branch }) => {
+            let mut v = vec![condition.as_ref(), then_branch.as_ref()];
+            if let Some(e) = else_branch {
+                v.push(e.as_ref());
+            }
+            v
+        }
+        AstKind::Statement(Statement::ElseIf { condition, then_branch, else_branch }) => {
             let mut v = vec![condition.as_ref(), then_branch.as_ref()];
             if let Some(e) = else_branch {
                 v.push(e.as_ref());

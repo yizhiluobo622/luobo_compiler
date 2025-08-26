@@ -49,6 +49,7 @@ fn generate_ast_nodes_and_edges(ast: &Ast, writer: &mut impl Write, node_id: usi
         AstKind::Statement(Statement::ExpressionStatement { .. }) => "ExprStmt".to_string(),
         AstKind::Statement(Statement::Return { .. }) => "Return".to_string(),
         AstKind::Statement(Statement::If { .. }) => "If".to_string(),
+        AstKind::Statement(Statement::ElseIf { .. }) => "ElseIf".to_string(),
         AstKind::Statement(Statement::While { .. }) => "While".to_string(),
         AstKind::Statement(Statement::For { .. }) => "For".to_string(),
         AstKind::Statement(Statement::Break) => "Break".to_string(),
@@ -101,6 +102,13 @@ fn get_direct_children<'a>(ast: &'a Ast) -> Vec<&'a Ast> {
         AstKind::Statement(Statement::ExpressionStatement { expression }) => vec![expression.as_ref()],
         AstKind::Statement(Statement::Return { value }) => value.as_ref().map(|b| b.as_ref()).into_iter().collect(),
         AstKind::Statement(Statement::If { condition, then_branch, else_branch }) => {
+            let mut v = vec![condition.as_ref(), then_branch.as_ref()];
+            if let Some(e) = else_branch {
+                v.push(e.as_ref());
+            }
+            v
+        }
+        AstKind::Statement(Statement::ElseIf { condition, then_branch, else_branch }) => {
             let mut v = vec![condition.as_ref(), then_branch.as_ref()];
             if let Some(e) = else_branch {
                 v.push(e.as_ref());

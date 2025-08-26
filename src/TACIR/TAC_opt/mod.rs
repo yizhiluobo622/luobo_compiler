@@ -254,10 +254,10 @@ fn cleanup_invalid_references(function: &mut crate::TACIR::TACFunction) -> Resul
 
 /// 修复内联优化后的CFG
 fn fix_cfg_after_inline(program: &mut crate::TACIR::TACProgram) -> Result<(), String> {
-
+    println!("🔧 内联优化后重建IR结构...");
     
     for function in &mut program.functions {
-        // 先清理无效的跳转指令
+        // 先清理无效的跳转指令和空的基本块
         cleanup_invalid_jumps(function)?;
         
         // 重新分配基本块ID，确保连续性
@@ -271,9 +271,12 @@ fn fix_cfg_after_inline(program: &mut crate::TACIR::TACProgram) -> Result<(), St
         
         // 最终验证
         validate_function_integrity(function)?;
+        
+        // 再次清理，确保没有残留的无效内容
+        cleanup_invalid_jumps(function)?;
     }
     
-
+    println!("✅ IR结构重建完成");
     Ok(())
 }
 
@@ -311,8 +314,6 @@ fn reassign_block_ids(function: &mut crate::TACIR::TACFunction) -> Result<(), St
 
 /// 更新所有跳转指令的目标
 fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
-
-    
     // 验证所有跳转指令的标签都是有效的
     let mut label_to_block_id = std::collections::HashMap::new();
     
@@ -321,8 +322,6 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
             label_to_block_id.insert(label.clone(), block_idx);
         }
     }
-    
-
     
     // 检查是否有无效的标签引用
     let mut invalid_labels = Vec::new();
@@ -353,15 +352,95 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
         for (block_id, inst_type, label) in &invalid_labels {
             println!("  - 基本块 {} 的 {} 指令引用了无效标签: {}", block_id, inst_type, label);
         }
+        
+        // 尝试修复无效标签引用
+        let mut fixed_count = 0;
+        for block in &mut function.basic_blocks {
+            for instruction in &mut block.instructions {
+                match instruction {
+                    crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                        if !label_to_block_id.contains_key(label) {
+                            // 尝试找到最接近的有效标签
+                            if let Some(valid_label) = find_closest_valid_label(label, &label_to_block_id.keys().cloned().collect()) {
+                                *label = valid_label;
+                                fixed_count += 1;
+                            }
+                        }
+                    }
+                    crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                        if !label_to_block_id.contains_key(true_label) {
+                            if let Some(valid_label) = find_closest_valid_label(true_label, &label_to_block_id.keys().cloned().collect()) {
+                                *true_label = valid_label;
+                                fixed_count += 1;
+                            }
+                        }
+                        if !label_to_block_id.contains_key(false_label) {
+                            if let Some(valid_label) = find_closest_valid_label(false_label, &label_to_block_id.keys().cloned().collect()) {
+                                *false_label = valid_label;
+                                fixed_count += 1;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // 检测和修复死循环
+        let mut loop_fixed_count = 0;
+        for block in &mut function.basic_blocks {
+            for instruction in &mut block.instructions {
+                match instruction {
+                    crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                        // 检查是否跳转到自己
+                        if let Some(block_label) = &block.label {
+                            if label == block_label {
+                                // 跳转到自己，修复为跳转到下一个基本块
+                                if let Some(next_label) = find_next_valid_label(block_label, &label_to_block_id.keys().cloned().collect()) {
+                                    *label = next_label;
+                                    loop_fixed_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                        // 检查条件跳转是否跳转到自己
+                        if let Some(block_label) = &block.label {
+                            if true_label == block_label {
+                                if let Some(next_label) = find_next_valid_label(block_label, &label_to_block_id.keys().cloned().collect()) {
+                                    *true_label = next_label;
+                                    loop_fixed_count += 1;
+                                }
+                            }
+                            if false_label == block_label {
+                                if let Some(next_label) = find_next_valid_label(block_label, &label_to_block_id.keys().cloned().collect()) {
+                                    *false_label = next_label;
+                                    loop_fixed_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        if loop_fixed_count > 0 {
+            println!("🔧 修复了 {} 个死循环跳转", loop_fixed_count);
+        }
+        
+        if fixed_count > 0 {
+            println!("🔧 修复了 {} 个无效标签引用", fixed_count);
+        }
     } else {
-
+        println!("✅ 所有标签引用都有效");
     }
     
     Ok(())
 }
 
-/// 清理无效的跳转指令
-fn cleanup_invalid_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
+/// 清理无效的跳转指令和空的基本块
+fn cleanup_invalid_jumps(function: &mut crate::TACIR::tacir::TACFunction) -> Result<(), String> {
     // 收集所有有效的标签
     let mut valid_labels = std::collections::HashSet::new();
     for block in &function.basic_blocks {
@@ -394,8 +473,59 @@ fn cleanup_invalid_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(),
         }
     }
     
+    // 清理空的基本块（除了有标签的块）
+    let mut empty_blocks_removed = 0;
+    let mut i = 0;
+    while i < function.basic_blocks.len() {
+        let block = &function.basic_blocks[i];
+        if block.instructions.is_empty() && block.label.is_none() {
+            function.basic_blocks.remove(i);
+            empty_blocks_removed += 1;
+        } else if block.instructions.is_empty() && block.label.is_some() {
+            // 有标签但没有指令的块，检查是否被引用
+            let label = block.label.as_ref().unwrap();
+            let mut is_referenced = false;
+            
+            for other_block in &function.basic_blocks {
+                for instruction in &other_block.instructions {
+                    match instruction {
+                        crate::TACIR::tacir::TACInstruction::Jump { label: jump_label } => {
+                            if jump_label == label {
+                                is_referenced = true;
+                                break;
+                            }
+                        }
+                        crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                            if true_label == label || false_label == label {
+                                is_referenced = true;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if is_referenced {
+                    break;
+                }
+            }
+            
+            if !is_referenced {
+                // 没有被引用的空标签块，可以删除
+                function.basic_blocks.remove(i);
+                empty_blocks_removed += 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    
     if cleaned_count > 0 {
         println!("🧹 清理了 {} 个无效跳转指令", cleaned_count);
+    }
+    if empty_blocks_removed > 0 {
+        println!("🧹 清理了 {} 个空的基本块", empty_blocks_removed);
     }
     
     Ok(())
@@ -482,3 +612,24 @@ fn find_closest_valid_label(invalid_label: &str, valid_labels: &std::collections
     // 如果无法解析，返回第一个有效标签
     valid_labels.iter().next().cloned()
 }
+
+/// 找到下一个有效的标签（用于修复死循环）
+fn find_next_valid_label(current_label: &str, valid_labels: &std::collections::HashSet<String>) -> Option<String> {
+    // 尝试从标签中提取数字部分
+    if let Some(number_str) = current_label.strip_prefix("L") {
+        if let Ok(current_number) = number_str.parse::<usize>() {
+            // 尝试找到下一个标签
+            for i in (current_number + 1)..(current_number + 100) { // 限制搜索范围
+                let candidate = format!("L{}", i);
+                if valid_labels.contains(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    
+    // 如果无法解析，返回第一个有效标签
+    valid_labels.iter().next().cloned()
+}
+
+

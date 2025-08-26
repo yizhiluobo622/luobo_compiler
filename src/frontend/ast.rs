@@ -122,6 +122,13 @@ pub enum Statement {
         else_branch: Option<Box<Ast>>,
     },
     
+    // else if语句 (专门用于else if链式结构)
+    ElseIf {
+        condition: Box<Ast>,
+        then_branch: Box<Ast>,
+        else_branch: Option<Box<Ast>>,
+    },
+    
     // while循环
     While {
         condition: Box<Ast>,
