@@ -1,4 +1,4 @@
-use crate::frontend::ast::{Ast, AstKind, Statement, Expression, Type};
+use crate::frontend::ast::{Ast, AstKind, Statement, Expression, Type, Literal, BinaryOperator, UnaryOperator};
 use crate::frontend::span::Span;
 use super::type_system::TypeSystem;
 use super::symbol_table::SymbolTable;
@@ -226,6 +226,52 @@ impl SemanticAnalyzer {
     /// 获取符号表引用
     pub fn get_symbol_table(&self) -> &SymbolTable {
         &self.symbol_table
+    }
+    
+    /// 计算常量表达式的值
+    pub fn evaluate_constant_expression(&self, expr: &Ast, constants: &std::collections::HashMap<String, i64>) -> Option<i64> {
+        match &expr.kind {
+            AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(value))) => {
+                Some(*value as i64)
+            }
+            AstKind::Expression(Expression::Identifier { name }) => {
+                constants.get(name).copied()
+            }
+            AstKind::Expression(Expression::BinaryOperation { left_operand, operator, right_operand }) => {
+                let left_val = self.evaluate_constant_expression(left_operand, constants)?;
+                let right_val = self.evaluate_constant_expression(right_operand, constants)?;
+                
+                match operator {
+                    BinaryOperator::Add => Some(left_val + right_val),
+                    BinaryOperator::Subtract => Some(left_val - right_val),
+                    BinaryOperator::Multiply => Some(left_val * right_val),
+                    BinaryOperator::Divide => {
+                        if right_val != 0 {
+                            Some(left_val / right_val)
+                        } else {
+                            None
+                        }
+                    }
+                    BinaryOperator::Modulo => {
+                        if right_val != 0 {
+                            Some(left_val % right_val)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None, // 其他运算符不支持常量折叠
+                }
+            }
+            AstKind::Expression(Expression::UnaryOperation { operator, operand }) => {
+                let operand_val = self.evaluate_constant_expression(operand, constants)?;
+                match operator {
+                    UnaryOperator::Minus => Some(-operand_val),
+                    UnaryOperator::Plus => Some(operand_val),
+                    _ => None, // 其他一元运算符不支持常量折叠
+                }
+            }
+            _ => None, // 其他表达式类型不支持常量折叠
+        }
     }
 }
 

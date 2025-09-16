@@ -254,11 +254,37 @@ pub enum UnaryOperator {
 }
 
 /// 数组大小类型
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub enum ArraySize {
     Unspecified,      // 无大小信息（如int a[]）
     Constant(String), // 存常量名（如maxm）
     Fixed(usize),     // 存固定值（如100）
+    Expression(Box<Ast>), // 存表达式（如maxn*4）
+}
+
+impl PartialEq for ArraySize {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ArraySize::Unspecified, ArraySize::Unspecified) => true,
+            (ArraySize::Constant(a), ArraySize::Constant(b)) => a == b,
+            (ArraySize::Fixed(a), ArraySize::Fixed(b)) => a == b,
+            (ArraySize::Expression(_), ArraySize::Expression(_)) => false, // 表达式无法比较
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ArraySize {}
+
+impl std::hash::Hash for ArraySize {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ArraySize::Unspecified => 0.hash(state),
+            ArraySize::Constant(s) => s.hash(state),
+            ArraySize::Fixed(n) => n.hash(state),
+            ArraySize::Expression(_) => 1.hash(state), // 表达式使用固定hash值
+        }
+    }
 }
 
 /// 类型

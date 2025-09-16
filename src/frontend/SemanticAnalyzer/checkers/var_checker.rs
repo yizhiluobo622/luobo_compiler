@@ -137,6 +137,9 @@ impl VarChecker {
                         crate::frontend::ast::ArraySize::Fixed(_) => {
                             // 数组大小已确定
                         }
+                        crate::frontend::ast::ArraySize::Expression(_) => {
+                            // 数组大小是表达式，语义分析阶段会处理
+                        }
                     }
                 }
                 

@@ -397,6 +397,29 @@ impl TypeSystem {
             return true;
         }
         
+        // 特殊处理数组类型兼容性
+        if let (Type::ArrayType { element_type: src_elem, array_size: src_size }, 
+                Type::ArrayType { element_type: dst_elem, array_size: dst_size }) = (source_type, target_type) {
+            // 数组元素类型必须相同
+            if src_elem != dst_elem {
+                return false;
+            }
+            
+            // 数组大小兼容性规则：
+            // 1. Unspecified 可以与任何大小兼容（函数参数）
+            // 2. Fixed 只能与 Fixed 兼容
+            // 3. Constant 只能与 Constant 兼容
+            // 4. Expression 只能与 Expression 兼容
+            return match (src_size, dst_size) {
+                (crate::frontend::ast::ArraySize::Unspecified, _) => true, // 函数参数可以接受任何大小的数组
+                (_, crate::frontend::ast::ArraySize::Unspecified) => true, // 函数参数可以接受任何大小的数组
+                (crate::frontend::ast::ArraySize::Fixed(a), crate::frontend::ast::ArraySize::Fixed(b)) => a == b,
+                (crate::frontend::ast::ArraySize::Constant(a), crate::frontend::ast::ArraySize::Constant(b)) => a == b,
+                (crate::frontend::ast::ArraySize::Expression(_), crate::frontend::ast::ArraySize::Expression(_)) => true, // 表达式大小暂时认为兼容
+                _ => false,
+            };
+        }
+        
         // 检查预定义的兼容性规则
         for (src, dst, compatible) in &self.type_compatibility {
             if src == source_type && dst == target_type {

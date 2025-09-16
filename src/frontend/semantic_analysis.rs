@@ -124,8 +124,8 @@ impl SemanticAnalysis {
         // 递归填充所有节点的语义信息
         // 先收集常量，然后使用新的带常量的函数
         let mut constants = std::collections::HashMap::new();
-        collect_constants(ast, &mut constants);
-        fill_semantic_info_recursive_with_constants(ast, symbol_table, type_system, &constants);
+        collect_constants(ast, &mut constants, &self.analyzer);
+        fill_semantic_info_recursive_with_constants(ast, symbol_table, type_system, &constants, &self.analyzer);
         
         // 标记整个AST为已分析
         mark_ast_as_analyzed(ast);
@@ -216,8 +216,8 @@ pub fn analyze_ast_with_semantic_info(mut ast: Ast) -> Result<Ast, Vec<SemanticE
         
         // 先收集常量，然后使用新的带常量的函数
         let mut constants = std::collections::HashMap::new();
-        collect_constants(&ast, &mut constants);
-        fill_semantic_info_recursive_with_constants(&mut ast, symbol_table, type_system, &constants);
+        collect_constants(&ast, &mut constants, &analyzer.analyzer);
+        fill_semantic_info_recursive_with_constants(&mut ast, symbol_table, type_system, &constants, &analyzer.analyzer);
         mark_ast_as_analyzed(&mut ast);
         
         Ok(ast)
@@ -235,18 +235,18 @@ fn fill_semantic_info(ast: &mut Ast, analyzer: &SemanticAnalysis) {
     
     // 先收集所有常量声明
     let mut constants = std::collections::HashMap::new();
-    collect_constants(ast, &mut constants);
+    collect_constants(ast, &mut constants, &analyzer.analyzer);
     println!("收集到的常量: {:?}", constants);
     
     // 递归填充所有节点的语义信息，传入常量表
-    fill_semantic_info_recursive_with_constants(ast, symbol_table, type_system, &constants);
+    fill_semantic_info_recursive_with_constants(ast, symbol_table, type_system, &constants, &analyzer.analyzer);
     
     // 标记整个AST为已分析
     mark_ast_as_analyzed(ast);
 }
 
 /// 收集所有常量声明及其值
-fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String, i64>) {
+fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String, i64>, analyzer: &crate::frontend::SemanticAnalyzer::sema::SemanticAnalyzer) {
     use crate::frontend::ast::{AstKind, Expression, Literal};
     
     match &ast.kind {
@@ -266,18 +266,18 @@ fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String
     match &ast.kind {
         AstKind::Program { functions, global_variables } => {
             for func in functions {
-                collect_constants(func, constants);
+                collect_constants(func, constants, analyzer);
             }
             for var in global_variables {
-                collect_constants(var, constants);
+                collect_constants(var, constants, analyzer);
             }
         }
         AstKind::Function { function_body, .. } => {
-            collect_constants(function_body, constants);
+            collect_constants(function_body, constants, analyzer);
         }
         AstKind::VariableDeclaration { initial_value, .. } => {
             if let Some(init) = initial_value {
-                collect_constants(init, constants);
+                collect_constants(init, constants, analyzer);
             }
         }
         AstKind::Statement(stmt) => {
@@ -285,11 +285,11 @@ fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String
             match stmt {
                 Statement::Compound { statements } => {
                     for stmt in statements {
-                        collect_constants(stmt, constants);
+                        collect_constants(stmt, constants, analyzer);
                     }
                 }
                 Statement::ExpressionStatement { expression } => {
-                    collect_constants(expression, constants);
+                    collect_constants(expression, constants, analyzer);
                 }
                 _ => {}
             }
@@ -297,19 +297,19 @@ fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String
         AstKind::Expression(expr) => {
             match expr {
                 Expression::BinaryOperation { left_operand, right_operand, .. } => {
-                    collect_constants(left_operand, constants);
-                    collect_constants(right_operand, constants);
+                    collect_constants(left_operand, constants, analyzer);
+                    collect_constants(right_operand, constants, analyzer);
                 }
                 Expression::UnaryOperation { operand, .. } => {
-                    collect_constants(operand, constants);
+                    collect_constants(operand, constants, analyzer);
                 }
                 Expression::Assignment { target, value, .. } => {
-                    collect_constants(target, constants);
-                    collect_constants(value, constants);
+                    collect_constants(target, constants, analyzer);
+                    collect_constants(value, constants, analyzer);
                 }
                 Expression::FunctionCall { arguments, .. } => {
                     for arg in arguments {
-                        collect_constants(arg, constants);
+                        collect_constants(arg, constants, analyzer);
                     }
                 }
                 _ => {}
@@ -320,7 +320,7 @@ fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String
 }
 
 /// 递归填充AST节点的语义信息（带常量表）
-fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &crate::frontend::SemanticAnalyzer::symbol_table::SymbolTable, type_system: &crate::frontend::SemanticAnalyzer::type_system::TypeSystem, constants: &std::collections::HashMap<String, i64>) {
+fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &crate::frontend::SemanticAnalyzer::symbol_table::SymbolTable, type_system: &crate::frontend::SemanticAnalyzer::type_system::TypeSystem, constants: &std::collections::HashMap<String, i64>, analyzer: &crate::frontend::SemanticAnalyzer::sema::SemanticAnalyzer) {
     use crate::frontend::ast::{AstKind, Expression};
     
     // 根据节点类型填充语义信息
@@ -354,6 +354,21 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
                             } else {
                             }
                         } else {
+                        }
+                    }
+                    crate::frontend::ast::ArraySize::Expression(expr) => {
+                        // 计算常量表达式的值
+                        if let Some(size) = analyzer.evaluate_constant_expression(expr, constants) {
+                            if size > 0 {
+                                // 创建新的数组类型，包含计算出的维度
+                                let new_array_type = crate::frontend::ast::Type::ArrayType {
+                                    element_type: element_type.clone(),
+                                    array_size: crate::frontend::ast::ArraySize::Fixed(size as usize),
+                                };
+                                
+                                // 更新AST节点的语义信息
+                                ast.semantic_info.set_deduced_type(new_array_type.clone());
+                            }
                         }
                     }
                     crate::frontend::ast::ArraySize::Unspecified => {
@@ -420,18 +435,18 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
         match &mut ast.kind {
             AstKind::Program { functions, global_variables } => {
                 for func in functions {
-                    fill_semantic_info_recursive_with_constants(func, symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(func, symbol_table, type_system, constants, analyzer);
                 }
                 for var in global_variables {
-                    fill_semantic_info_recursive_with_constants(var, symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(var, symbol_table, type_system, constants, analyzer);
                 }
             }
             AstKind::Function { function_body, .. } => {
-                fill_semantic_info_recursive_with_constants(function_body, symbol_table, type_system, constants);
+                fill_semantic_info_recursive_with_constants(function_body, symbol_table, type_system, constants, analyzer);
             }
             AstKind::VariableDeclaration { initial_value, .. } => {
                 if let Some(init) = initial_value {
-                    fill_semantic_info_recursive_with_constants(init, symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(init, symbol_table, type_system, constants, analyzer);
                 }
             }
             AstKind::Statement(stmt) => {
@@ -439,39 +454,39 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
                 match stmt {
                     Statement::Compound { statements } => {
                         for stmt in statements {
-                            fill_semantic_info_recursive_with_constants(stmt, symbol_table, type_system, constants);
+                            fill_semantic_info_recursive_with_constants(stmt, symbol_table, type_system, constants, analyzer);
                         }
                     }
                     Statement::ExpressionStatement { expression } => {
-                        fill_semantic_info_recursive_with_constants(expression, symbol_table, type_system, constants);
+                        fill_semantic_info_recursive_with_constants(expression, symbol_table, type_system, constants, analyzer);
                     }
                     Statement::Return { value } => {
                         if let Some(val) = value {
-                            fill_semantic_info_recursive_with_constants(val, symbol_table, type_system, constants);
+                            fill_semantic_info_recursive_with_constants(val, symbol_table, type_system, constants, analyzer);
                         }
                     }
                     Statement::If { condition, then_branch, else_branch } => {
-                        fill_semantic_info_recursive_with_constants(condition, symbol_table, type_system, constants);
-                        fill_semantic_info_recursive_with_constants(then_branch, symbol_table, type_system, constants);
+                        fill_semantic_info_recursive_with_constants(condition, symbol_table, type_system, constants, analyzer);
+                        fill_semantic_info_recursive_with_constants(then_branch, symbol_table, type_system, constants, analyzer);
                         if let Some(else_branch) = else_branch {
-                            fill_semantic_info_recursive_with_constants(else_branch, symbol_table, type_system, constants);
+                            fill_semantic_info_recursive_with_constants(else_branch, symbol_table, type_system, constants, analyzer);
                         }
                     }
                     Statement::While { condition, body } => {
-                        fill_semantic_info_recursive_with_constants(condition, symbol_table, type_system, constants);
-                        fill_semantic_info_recursive_with_constants(body, symbol_table, type_system, constants);
+                        fill_semantic_info_recursive_with_constants(condition, symbol_table, type_system, constants, analyzer);
+                        fill_semantic_info_recursive_with_constants(body, symbol_table, type_system, constants, analyzer);
                     }
                     Statement::For { initialization, condition, update, body } => {
                         if let Some(init) = initialization {
-                            fill_semantic_info_recursive_with_constants(init, symbol_table, type_system, constants);
+                            fill_semantic_info_recursive_with_constants(init, symbol_table, type_system, constants, analyzer);
                         }
                         if let Some(cond) = condition {
-                            fill_semantic_info_recursive_with_constants(cond, symbol_table, type_system, constants);
+                            fill_semantic_info_recursive_with_constants(cond, symbol_table, type_system, constants, analyzer);
                         }
                         if let Some(upd) = update {
-                            fill_semantic_info_recursive_with_constants(upd, symbol_table, type_system, constants);
+                            fill_semantic_info_recursive_with_constants(upd, symbol_table, type_system, constants, analyzer);
                         }
-                        fill_semantic_info_recursive_with_constants(body, symbol_table, type_system, constants);
+                        fill_semantic_info_recursive_with_constants(body, symbol_table, type_system, constants, analyzer);
                     }
                     _ => {}
                 }
@@ -480,8 +495,8 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
             use crate::frontend::ast::Expression;
             match expr {
                 Expression::BinaryOperation { left_operand, right_operand, operator } => {
-                    fill_semantic_info_recursive_with_constants(left_operand.as_mut(), symbol_table, type_system, constants);
-                    fill_semantic_info_recursive_with_constants(right_operand.as_mut(), symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(left_operand.as_mut(), symbol_table, type_system, constants, analyzer);
+                    fill_semantic_info_recursive_with_constants(right_operand.as_mut(), symbol_table, type_system, constants, analyzer);
                     
                     // 获取左右操作数的类型
                     let left_type = left_operand.semantic_info.deduced_type.clone();
@@ -565,7 +580,7 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
                     }
                 }
                 Expression::UnaryOperation { operand, operator } => {
-                    fill_semantic_info_recursive_with_constants(operand.as_mut(), symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(operand.as_mut(), symbol_table, type_system, constants, analyzer);
                     
                     // 获取操作数类型
                     let operand_type = operand.semantic_info.deduced_type.clone();
@@ -604,8 +619,8 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
                     }
                 }
                 Expression::Assignment { target, value } => {
-                    fill_semantic_info_recursive_with_constants(target.as_mut(), symbol_table, type_system, constants);
-                    fill_semantic_info_recursive_with_constants(value.as_mut(), symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(target.as_mut(), symbol_table, type_system, constants, analyzer);
+                    fill_semantic_info_recursive_with_constants(value.as_mut(), symbol_table, type_system, constants, analyzer);
                     
                     // 获取值类型
                     let value_type = value.semantic_info.deduced_type.clone();
@@ -633,12 +648,12 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
                 }
                 Expression::FunctionCall { arguments, .. } => {
                     for arg in arguments {
-                        fill_semantic_info_recursive_with_constants(arg, symbol_table, type_system, constants);
+                        fill_semantic_info_recursive_with_constants(arg, symbol_table, type_system, constants, analyzer);
                     }
                 }
                 Expression::ArrayAccess { array, index } => {
-                    fill_semantic_info_recursive_with_constants(array, symbol_table, type_system, constants);
-                    fill_semantic_info_recursive_with_constants(index, symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(array, symbol_table, type_system, constants, analyzer);
+                    fill_semantic_info_recursive_with_constants(index, symbol_table, type_system, constants, analyzer);
                     
                     // 推导数组访问的结果类型
                     if let Some(array_type) = array.semantic_info.deduced_type.as_ref() {
@@ -683,7 +698,7 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
                     }
                 }
                 Expression::MemberAccess { object, .. } => {
-                    fill_semantic_info_recursive_with_constants(object, symbol_table, type_system, constants);
+                    fill_semantic_info_recursive_with_constants(object, symbol_table, type_system, constants, analyzer);
                 }
                 _ => {}
             }

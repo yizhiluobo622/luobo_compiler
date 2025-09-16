@@ -1557,12 +1557,8 @@ impl<'a> Parser<'a> {
                         crate::frontend::ast::ArraySize::Constant(name.to_string())
                     }
                     _ => {
-                        // 其他表达式暂时不支持
-                        let error = ParseError {
-                            message: "数组大小必须是整数字面量或常量标识符".to_string(),
-                            span: size_expr.span.clone(),
-                        };
-                        return Err(vec![error]);
+                        // 支持常量表达式（如maxn*4）
+                        crate::frontend::ast::ArraySize::Expression(Box::new(size_expr))
                     }
                 }
             };
