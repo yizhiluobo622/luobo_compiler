@@ -133,7 +133,6 @@ impl DataFlowAnalysis {
     
     /// 重建IR结构，确保在优化后的一致性
     fn rebuild_ir_structure(&mut self, function: &mut TACFunction) -> Result<(), String> {
-        println!("🔧 开始重建IR结构...");
         
         // 1. 验证所有基本块ID的有效性
         self.validate_basic_block_ids(function)?;
@@ -147,7 +146,6 @@ impl DataFlowAnalysis {
         // 4. 重新分配指令ID（如果需要）
         self.reassign_instruction_ids(function)?;
         
-        println!("✅ IR结构重建完成");
         Ok(())
     }
     
@@ -187,12 +185,10 @@ impl DataFlowAnalysis {
             let cleaned = original_len - block.successors.len();
             if cleaned > 0 {
                 cleaned_count += cleaned;
-                println!("🧹 清理了基本块 {} 的 {} 个无效引用", block.id, cleaned);
             }
         }
         
         if cleaned_count > 0 {
-            println!("🧹 总共清理了 {} 个无效的基本块引用", cleaned_count);
         }
         
         Ok(())
@@ -260,7 +256,6 @@ impl DataFlowAnalysis {
             let basic_block = match function.get_basic_block(block_id) {
                 Some(block) => block,
                 None => {
-                    println!("⚠️ 警告：找不到基本块ID: {}，跳过此基本块", block_id);
                     continue;
                 }
             };
@@ -285,7 +280,6 @@ impl DataFlowAnalysis {
         }
         
         if iterations >= MAX_ITERATIONS {
-            println!("⚠️ 数据流分析达到最大迭代次数: {}", MAX_ITERATIONS);
         }
         
 
@@ -506,7 +500,6 @@ impl ConstantOptimizationPass {
     
     /// 运行常量优化 - 支持多轮优化处理链式依赖
     pub fn run(&mut self, program: &mut TACProgram) -> Result<OptimizationResult, String> {
-        println!("🚀 开始常量优化...");
         
         let mut result = OptimizationResult::new();
         let mut total_optimizations = 0;
@@ -551,17 +544,11 @@ impl ConstantOptimizationPass {
             
             // 如果没有新的优化，说明已经收敛
             if round_optimizations == 0 {
-                println!("🎯 优化收敛，在第 {} 轮停止", round);
                 break;
             }
         }
         
         // 显示优化结果
-        println!("✅ 常量优化完成");
-        println!("   🧮 常量折叠: {} 次", self.constant_foldings);
-        println!("   📊 常量传播: {} 次", self.constant_propagations);
-        println!("   📈 总优化指令: {} 条", total_optimizations);
-        println!("   🔄 优化轮次: {} 轮", round);
         
         // 更新统计信息
         self.stats.constant_foldings = self.constant_foldings;
@@ -577,11 +564,13 @@ impl ConstantOptimizationPass {
     
     /// 初始化全局常量
     fn initialize_global_constants(&mut self, program: &TACProgram) {
-        for (var_name, var_type, initial_value) in &program.global_variables {
-            if let Some(operand) = initial_value {
-                if let Operand::Constant(constant_value) = operand {
-                    self.global_constants.insert(var_name.clone(), constant_value.clone());
-
+        for (var_name, var_type, initial_value, is_const) in &program.global_variables {
+            // 只有真正的常量变量才被当作常量
+            if *is_const {
+                if let Some(operand) = initial_value {
+                    if let Operand::Constant(constant_value) = operand {
+                        self.global_constants.insert(var_name.clone(), constant_value.clone());
+                    }
                 }
             }
         }
@@ -949,7 +938,6 @@ impl OptimizationPass for ConstantOptimizationPass {
 impl ConstantOptimizationPass {
     /// 将原有的run逻辑移到新方法中，避免递归调用
     fn run_optimization(&mut self, program: &mut TACProgram) -> Result<OptimizationResult, String> {
-        println!("🚀 开始常量优化...");
         
         let mut result = OptimizationResult::new();
         let mut total_optimizations = 0;
@@ -998,17 +986,11 @@ impl ConstantOptimizationPass {
             
             // 如果没有新的优化，说明已经收敛
             if round_optimizations == 0 {
-                println!("🎯 优化收敛，在第 {} 轮停止", round);
                 break;
             }
         }
         
         // 显示优化结果
-        println!("✅ 常量优化完成");
-        println!("   🧮 常量折叠: {} 次", self.constant_foldings);
-        println!("   📊 常量传播: {} 次", self.constant_propagations);
-        println!("   📈 总优化指令: {} 条", total_optimizations);
-        println!("   🔄 优化轮次: {} 轮", round);
         
         // 更新统计信息
         self.stats.constant_foldings = self.constant_foldings;
@@ -1070,7 +1052,6 @@ impl ConstantOptimizationPass {
         }
         
         if optimized_count > 0 {
-            println!("📊 常量传播: {} 次", optimized_count);
         }
         
         Ok(optimized_count)

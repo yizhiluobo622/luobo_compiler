@@ -26,82 +26,44 @@ pub mod tests {
         let ast = parser.parse().expect("Parser failed");
         
         // 生成AST DOT图来查看结构
-        println!("=== 生成AST DOT图 ===");
         show_ast_dot(&ast, "test_000_1_ast.dot");
         
         // Semantic Analysis
         let annotated_ast = analyze_ast_with_semantic_info(ast).expect("Semantic analysis failed");
         
         // 生成语义分析后的AST DOT图
-        println!("\n=== 生成语义分析后的AST DOT图 ===");
         show_ast_dot(&annotated_ast, "test_000_1_semantic_ast.dot");
         
         // TAC IR转换
-        println!("=== 开始TAC IR转换 ===");
         match TACIR::convert_ast_to_tac(&annotated_ast) {
             Ok(mut tac_program) => {
-                println!("✅ TAC IR转换成功！");
-                println!("程序包含 {} 个函数", tac_program.functions.len());
-                
                 // 验证IR的正确性
                 validate_tac_ir(&tac_program);
                 
-                // 运行完整的优化流水线
-                println!("\n=== 运行完整优化流水线 ===");
-                match TACIR::TAC_opt::run_all_optimizations(&mut tac_program) {
-                    Ok(results) => {
-                        println!("✅ 优化流水线执行成功！");
-                        for (i, result) in results.iter().enumerate() {
-                            if result.optimized {
-                                println!("   第{}个优化: 优化指令数 {}", i + 1, result.instructions_optimized);
-                            } else {
-                                println!("   第{}个优化: 无优化机会", i + 1);
-                            }
-                        }
-                        
-                        // 显示优化后的简要信息
-                        if let Some(main_func) = tac_program.get_main_function() {
-                            println!("\n=== 优化后main函数信息 ===");
-                            println!("基本块数: {}", main_func.basic_blocks.len());
-                            let total_instructions: usize = main_func.basic_blocks.iter()
-                                .map(|block| block.instructions.len())
-                                .sum();
-                            println!("总指令数: {}", total_instructions);
-                        }
-                        
-                        // 输出完整的优化后IR
-                        println!("\n=== 完整优化后IR ===");
-                        println!("{}", tac_program);
-                    }
-                    Err(e) => {
-                        println!("❌ 优化流水线失败: {}", e);
-                    }
-                }
+                // 运行优化Pass
+                let mut inline_pass = TACIR::TAC_opt::inline::InlineOptimizationPass::new();
+                let _ = inline_pass.run(&mut tac_program);
                 
-                // 如果优化失败，输出未优化的IR作为备选
-                // println!("\n=== 转换后的IR（未优化） ===");
-                // println!("{}", tac_program);
+                let mut constant_pass = TACIR::TAC_opt::constant_opt::ConstantOptimizationPass::new();
+                let _ = constant_pass.run(&mut tac_program);
+                
+                let mut algebraic_pass = TACIR::TAC_opt::algebraic_opt::AlgebraicOptimizationPass::new();
+                let _ = algebraic_pass.run(&mut tac_program);
+                
+                // 输出最终优化后的IR
+                println!("{}", tac_program);
             }
             Err(e) => {
-                println!("❌ TAC IR转换失败: {:?}", e);
-                panic!("TAC IR转换失败");
+                panic!("TAC IR转换失败: {:?}", e);
             }
         }
     }
     
     /// 简洁验证TAC IR的正确性
     fn validate_tac_ir(program: &TACIR::TACProgram) {
-        // 先打印一些调试信息
-        println!("程序包含 {} 个函数", program.functions.len());
-        for (i, func) in program.functions.iter().enumerate() {
-            println!("函数 {}: '{}' 有 {} 个基本块", i, func.name, func.basic_blocks.len());
-        }
-        
         if let Some(main_func) = program.get_main_function() {
-            println!("找到main函数，有 {} 个基本块", main_func.basic_blocks.len());
             assert!(!main_func.basic_blocks.is_empty(), "main函数必须有基本块");
             assert!(!main_func.basic_blocks[0].instructions.is_empty(), "基本块必须有指令");
-            println!("✅ IR验证通过");
         } else {
             panic!("未找到main函数");
         }

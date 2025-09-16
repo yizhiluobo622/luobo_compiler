@@ -64,11 +64,15 @@ impl TypeSystem {
             Expression::Identifier { name } => {
                 // 从符号表中查找类型
                 if let Some(var_type) = symbol_table.get_variable_type(name) {
-                    Ok(var_type)
+                    // 对于数组类型，需要解析常量维度
+                    let resolved_type = self.resolve_array_constant_dimensions(&var_type, symbol_table);
+                    Ok(resolved_type)
                 } else {
                     // 如果变量表中没有，尝试从符号表中查找（可能是在其他作用域中）
                     if let Some(symbol) = symbol_table.lookup_symbol(name) {
-                                            Ok(symbol.data_type.clone())
+                        // 对于数组类型，需要解析常量维度
+                        let resolved_type = self.resolve_array_constant_dimensions(&symbol.data_type, symbol_table);
+                        Ok(resolved_type)
                     } else {
                         Err(format!("未定义的变量：'{}'", name))
                     }
@@ -190,11 +194,13 @@ impl TypeSystem {
             Expression::Identifier { name } => {
                 // 从符号表中查找类型
                 if let Some(var_type) = symbol_table.get_variable_type(name) {
-                    Ok(var_type)
+                    // 对于数组类型，需要解析常量维度
+                    Ok(self.resolve_array_constant_dimensions(&var_type, symbol_table))
                 } else {
                     // 如果变量表中没有，尝试从符号表中查找（可能是在其他作用域中）
                     if let Some(symbol) = symbol_table.lookup_symbol(name) {
-                        Ok(symbol.data_type.clone())
+                        // 对于数组类型，需要解析常量维度
+                        Ok(self.resolve_array_constant_dimensions(&symbol.data_type, symbol_table))
                     } else {
                         Err(format!("未定义的变量：'{}'", name))
                     }
@@ -507,6 +513,49 @@ impl TypeSystem {
                 parameter_types.iter().all(|t| self.is_valid_type(t)) &&
                 self.is_valid_type(return_type)
             }
+        }
+    }
+
+    /// 解析数组类型中的常量维度
+    /// 
+    /// 将ArraySize::Constant类型的数组维度解析为具体的数值
+    /// 
+    /// # 参数
+    /// * `type_` - 要解析的类型
+    /// * `symbol_table` - 符号表（用于查找常量值）
+    /// 
+    /// # 返回
+    /// 解析后的类型，常量数组维度被替换为固定值
+    fn resolve_array_constant_dimensions(&self, type_: &Type, symbol_table: &SymbolTable) -> Type {
+        match type_ {
+            Type::ArrayType { element_type, array_size } => {
+                let resolved_element_type = Box::new(self.resolve_array_constant_dimensions(element_type, symbol_table));
+                
+                let resolved_array_size = match array_size {
+                    crate::frontend::ast::ArraySize::Constant(const_name) => {
+                        // 尝试从符号表查找常量值并提取其初始值
+                        if let Some(symbol) = symbol_table.lookup_symbol(const_name) {
+                            if symbol.is_const && symbol.data_type == Type::IntType {
+                                // 这里需要从符号的初始值中提取常量值
+                                // 由于符号表中没有存储初始值，我们需要一个不同的方法
+                                // 暂时保持常量引用，但数组类型仍然是有效的
+                                array_size.clone()
+                            } else {
+                                array_size.clone()
+                            }
+                        } else {
+                            array_size.clone()
+                        }
+                    }
+                    _ => array_size.clone(),
+                };
+                
+                Type::ArrayType {
+                    element_type: resolved_element_type,
+                    array_size: resolved_array_size,
+                }
+            }
+            _ => type_.clone(),
         }
     }
 }

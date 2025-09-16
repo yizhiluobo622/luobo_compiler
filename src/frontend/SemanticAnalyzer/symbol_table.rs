@@ -163,7 +163,6 @@ impl SymbolTable {
                 break;
             }
         }
-        
         None
     }
     

@@ -42,6 +42,9 @@ impl VarChecker {
                 initial_value,
                 is_const,
             } => {
+                // 直接使用原始类型，不在收集阶段解析常量
+                // 常量解析将在类型推导阶段进行
+                
                 // 添加变量到符号表
                 match symbol_table.add_variable(variable_name, variable_type.clone(), var_decl.span.clone(), *is_const) {
                     Ok(()) => {
@@ -487,4 +490,5 @@ impl VarChecker {
             // 如果不是数组类型，则不进行递归检查
         }
     }
+
 }

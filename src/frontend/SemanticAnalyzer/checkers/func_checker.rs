@@ -123,8 +123,8 @@ impl FuncChecker {
                 // 检查函数体并重建函数内的符号表
                 self.check_function_body(function_body, function_name, return_type, symbol_table, type_system, errors);
                 
-                // 注意：不退出函数作用域，保持局部变量在符号表中
-                // 这样后续的语义信息填充可以正确访问局部变量
+                // 退出函数作用域，清理局部变量
+                symbol_table.exit_scope();
             }
             _ => {
                 errors.push(SemanticError {
@@ -178,8 +178,8 @@ impl FuncChecker {
                             }
                         }
                         
-                        // 注意：不退出复合语句作用域，保持局部变量在符号表中
-                        // 这样后续的语义信息填充可以正确访问局部变量
+                        // 退出复合语句作用域
+                        symbol_table.exit_scope();
                     }
                     _ => {
                         // 单个语句
@@ -262,8 +262,8 @@ impl FuncChecker {
                             self.check_statement_in_function(sub_stmt, return_type, symbol_table, type_system, errors);
                         }
                         
-                        // 注意：不退出复合语句作用域，保持局部变量在符号表中
-                        // 这样后续的语义信息填充可以正确访问局部变量
+                        // 退出复合语句作用域
+                        symbol_table.exit_scope();
                     }
                     crate::frontend::ast::Statement::If { condition, then_branch, else_branch } => {
                         // 检查条件表达式
@@ -306,8 +306,8 @@ impl FuncChecker {
                         // 检查循环体
                         self.check_statement_in_function(body, return_type, symbol_table, type_system, errors);
                         
-                        // 注意：不退出for循环作用域，保持局部变量在符号表中
-                        // 这样后续的语义信息填充可以正确访问局部变量
+                        // 退出for循环作用域
+                        symbol_table.exit_scope();
                     }
                     _ => {
                         // 其他语句类型暂时跳过

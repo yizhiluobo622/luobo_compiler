@@ -21,7 +21,7 @@ pub fn print_tac_program(program: &TACProgram) {
     // 打印全局变量
     if !program.global_variables.is_empty() {
         println!("全局变量:");
-        for (name, var_type, initial_value) in &program.global_variables {
+        for (name, var_type, initial_value, is_const) in &program.global_variables {
             match initial_value {
                 Some(value) => println!("  {}: {:?} = {:?}", name, var_type, value),
                 None => println!("  {}: {:?}", name, var_type),

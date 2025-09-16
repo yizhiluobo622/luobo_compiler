@@ -125,7 +125,6 @@ impl SemanticAnalysis {
         // 先收集常量，然后使用新的带常量的函数
         let mut constants = std::collections::HashMap::new();
         collect_constants(ast, &mut constants);
-        println!("收集到的常量: {:?}", constants);
         fill_semantic_info_recursive_with_constants(ast, symbol_table, type_system, &constants);
         
         // 标记整个AST为已分析
@@ -218,7 +217,6 @@ pub fn analyze_ast_with_semantic_info(mut ast: Ast) -> Result<Ast, Vec<SemanticE
         // 先收集常量，然后使用新的带常量的函数
         let mut constants = std::collections::HashMap::new();
         collect_constants(&ast, &mut constants);
-        println!("收集到的常量: {:?}", constants);
         fill_semantic_info_recursive_with_constants(&mut ast, symbol_table, type_system, &constants);
         mark_ast_as_analyzed(&mut ast);
         
@@ -257,7 +255,6 @@ fn collect_constants(ast: &Ast, constants: &mut std::collections::HashMap<String
                 if let Some(init_value) = initial_value {
                     if let AstKind::Expression(Expression::Literal(Literal::IntegerLiteral(value))) = &init_value.kind {
                         constants.insert(variable_name.clone(), *value as i64);
-                        println!("收集常量: {} = {}", variable_name, value);
                     }
                 }
             }
@@ -338,15 +335,12 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
             if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = variable_type {
                 match array_size {
                     crate::frontend::ast::ArraySize::Fixed(size) => {
-                        println!("数组 {} 的维度: {}", variable_name, size);
                     }
                     crate::frontend::ast::ArraySize::Constant(ident) => {
-                        println!("数组 {} 的维度为常量: {}", variable_name, ident);
                         
                         // 尝试从常量表推断数组维度
                         if let Some(&size) = constants.get(ident.as_str()) {
                             if size > 0 {
-                                println!("✅ 从常量表推断数组 {} 的维度为: {} (常量: {})", variable_name, size, ident);
                                 
                                 // 创建新的数组类型，包含正确的维度
                                 let new_array_type = crate::frontend::ast::Type::ArrayType {
@@ -357,16 +351,12 @@ fn fill_semantic_info_recursive_with_constants(ast: &mut Ast, symbol_table: &cra
                                 // 更新AST节点的语义信息
                                 ast.semantic_info.set_deduced_type(new_array_type.clone());
                                 
-                                println!("✅ 已更新语义信息中数组 {} 的维度为: {}", variable_name, size);
                             } else {
-                                println!("❌ 常量 {} 的值 {} 不能作为数组维度", ident, size);
                             }
                         } else {
-                            println!("❌ 无法从常量表找到常量: {}", ident);
                         }
                     }
                     crate::frontend::ast::ArraySize::Unspecified => {
-                        println!("数组 {} 的维度未指定", variable_name);
                     }
                 }
             }

@@ -458,7 +458,7 @@ impl fmt::Display for TACFunction {
 #[derive(Debug, Clone)]
 pub struct TACProgram {
     /// 全局变量
-    pub global_variables: Vec<(String, Type, Option<Operand>)>,
+    pub global_variables: Vec<(String, Type, Option<Operand>, bool)>, // 添加 is_const 字段
     /// 全局数组变量
     pub global_array_variables: Vec<(String, Type, Vec<usize>)>,
     /// 函数列表
@@ -501,8 +501,8 @@ impl TACProgram {
     }
     
     /// 添加全局变量
-    pub fn add_global_variable(&mut self, name: String, var_type: Type, initial_value: Option<Operand>) {
-        self.global_variables.push((name, var_type, initial_value));
+    pub fn add_global_variable(&mut self, name: String, var_type: Type, initial_value: Option<Operand>, is_const: bool) {
+        self.global_variables.push((name, var_type, initial_value, is_const));
     }
     
     /// 添加全局数组变量
@@ -515,7 +515,7 @@ impl fmt::Display for TACProgram {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "TAC Program")?;
         writeln!(f, "Global Variables:")?;
-        for (name, var_type, initial_value) in &self.global_variables {
+        for (name, var_type, initial_value, is_const) in &self.global_variables {
             let initial_value_str = match initial_value {
                 Some(val) => val.to_string(),
                 None => "None".to_string(),
