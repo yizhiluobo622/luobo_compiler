@@ -111,6 +111,30 @@ impl SemanticAnalyzer {
             vec![Type::IntType],
             Span::start_only(0, 0, 0, 0),
         );
+        // getarray: (int[]) -> void (读取数组)
+        let _ = self.symbol_table.add_function(
+            "getarray",
+            Type::VoidType,
+            vec![Type::ArrayType { 
+                element_type: Box::new(Type::IntType),
+                array_size: crate::frontend::ast::ArraySize::Unspecified
+            }],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // getfloat: () -> float (读取浮点数)
+        let _ = self.symbol_table.add_function(
+            "getfloat",
+            Type::FloatType,
+            vec![],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // putfloat: (float) -> void (输出浮点数)
+        let _ = self.symbol_table.add_function(
+            "putfloat",
+            Type::VoidType,
+            vec![Type::FloatType],
+            Span::start_only(0, 0, 0, 0),
+        );
     }
     
 

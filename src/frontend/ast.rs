@@ -211,7 +211,7 @@ pub enum Expression {
 #[derive(Debug, Clone)]
 pub enum Literal {
     IntegerLiteral(i32),
-    FloatLiteral(f32),
+    FloatLiteral(f64), // 使用f64保持高精度
     StringLiteral(String),
     BooleanLiteral(bool),
 }

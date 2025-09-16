@@ -15,7 +15,7 @@ pub enum Token {
     Identifier(String), // 如 "main"
 
     IntConst(i32),   // 如 0, 123
-    FloatConst(f32),
+    FloatConst(f64), // 使用f64保持高精度
 
     // 符号和运算符
     Plus,         // +
@@ -477,7 +477,7 @@ impl<'a> Lexer<'a> {
             }
             
             let num_str: &str = &self.input[start..self.pos];
-            match num_str.parse::<f32>() {
+            match num_str.parse::<f64>() {
                 Ok(f) => return Token::FloatConst(f),
                 Err(_) => return Token::FloatConst(0.0)
             }
@@ -538,7 +538,7 @@ impl<'a> Lexer<'a> {
                     
                     if has_dot || has_exponent {
                         // 十六进制浮点数
-                        match hex_str.parse::<f32>() {
+                        match hex_str.parse::<f64>() {
                             Ok(f) => return Token::FloatConst(f),
                             Err(_) => return Token::FloatConst(0.0)
                         }
@@ -634,8 +634,8 @@ impl<'a> Lexer<'a> {
         let num_str: &str = &self.input[start..self.pos];
 
         if has_dot || has_e {
-            // 尝试解析为浮点数 f32
-            match num_str.parse::<f32>() {
+            // 尝试解析为浮点数 f64，保持高精度
+            match num_str.parse::<f64>() {
                 Ok(f) => Token::FloatConst(f),
                 Err(_) => Token::FloatConst(0.0)
             }

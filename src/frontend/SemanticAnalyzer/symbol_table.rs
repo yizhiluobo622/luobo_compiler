@@ -330,14 +330,33 @@ impl SymbolTable {
     /// * `Some(Symbol)` - 匹配的函数符号
     /// * `None` - 未找到匹配的函数
     pub fn lookup_function(&self, name: &str, parameters: &[Type]) -> Option<Symbol> {
-        if let Some(symbol) = self.lookup_symbol(name) {
-            if symbol.kind == SymbolKind::Function {
-                if let Some(expected_params) = &symbol.parameters {
-                    if expected_params.len() == parameters.len() {
-                        // 简单的参数数量匹配，未来可以扩展类型匹配
-                        return Some(symbol);
+        // 专门查找函数，避免与同名变量冲突
+        let mut current = self.current_scope;
+        let mut visited = std::collections::HashSet::new();
+        
+        while current < self.scopes.len() && !visited.contains(&current) {
+            visited.insert(current);
+            let scope = &self.scopes[current];
+            
+            if let Some(symbol) = scope.symbols.get(name) {
+                if symbol.kind == SymbolKind::Function {
+                    if let Some(expected_params) = &symbol.parameters {
+                        if expected_params.len() == parameters.len() {
+                            // 简单的参数数量匹配，未来可以扩展类型匹配
+                            return Some(symbol.clone());
+                        }
+                    } else {
+                        // 没有参数信息的函数（如内置函数）
+                        return Some(symbol.clone());
                     }
                 }
+            }
+            
+            // 移动到父作用域
+            if let Some(parent) = scope.parent {
+                current = parent;
+            } else {
+                break;
             }
         }
         

@@ -1,4 +1,4 @@
-use crate::frontend::ast::{Ast, AstKind, Expression};
+use crate::frontend::ast::{Ast, AstKind, Expression, Type};
 use crate::frontend::span::Span;
 use crate::frontend::SemanticAnalyzer::symbol_table::SymbolTable;
 use crate::frontend::SemanticAnalyzer::type_system::TypeSystem;
@@ -285,17 +285,21 @@ impl ExprChecker {
         type_system: &TypeSystem,
         errors: &mut Vec<SemanticError>,
     ) {
-        // 检查函数是否存在
-        if let Some(function_symbol) = symbol_table.lookup_symbol(function_name) {
-            if function_symbol.kind != crate::frontend::SemanticAnalyzer::symbol_table::SymbolKind::Function {
-                errors.push(SemanticError {
-                    message: format!("'{}' 不是函数", function_name),
-                    span: arguments.first().map(|arg| arg.span.clone()).unwrap_or_else(|| Span::new(0, 0, 0, 0, 0)),
-                    error_type: crate::frontend::SemanticAnalyzer::sema::SemanticErrorType::UndefinedFunction,
-                });
-                return;
+        // 先推导参数类型
+        let mut argument_types = Vec::new();
+        for arg in arguments {
+            if let AstKind::Expression(expr) = &arg.kind {
+                match type_system.deduce_expression_type(expr, symbol_table) {
+                    Ok(arg_type) => argument_types.push(arg_type),
+                    Err(_) => argument_types.push(Type::IntType), // 默认类型
+                }
+            } else {
+                argument_types.push(Type::IntType); // 默认类型
             }
-            
+        }
+        
+        // 使用专门的函数查找方法，避免与同名变量冲突
+        if let Some(function_symbol) = symbol_table.lookup_function(function_name, &argument_types) {
             // 检查参数数量和类型
             if let Some(expected_params) = &function_symbol.parameters {
                 if arguments.len() != expected_params.len() {

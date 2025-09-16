@@ -1521,6 +1521,18 @@ impl ASTToTACConverter {
         indices: &[usize],
         block: &mut BasicBlock,
     ) -> Result<Operand, String> {
+        // 对于多维数组，如果索引数量少于维度数量，使用线性索引计算
+        if indices.len() < dimensions.len() {
+            // 使用线性索引计算偏移
+            if indices.len() == 1 {
+                let index = indices[0];
+                let offset_operand = Operand::Constant(ConstantValue::Integer(index as i64));
+                return Ok(offset_operand);
+            } else {
+                return Err(format!("不支持的索引数量: {}", indices.len()));
+            }
+        }
+        
         if indices.len() != dimensions.len() {
             return Err(format!("索引数量与数组维度不匹配: 索引数量={}, 维度数量={}", 
                 indices.len(), dimensions.len()));
@@ -1715,6 +1727,16 @@ impl ASTToTACConverter {
         
         // 获取数组变量
         let array_result = self.convert_ast_node(current_array, program)?;
+        
+        // 获取数组变量名（用于调试）
+        let array_name = if let AstKind::Expression(Expression::Identifier { name }) = &current_array.kind {
+            name.clone()
+        } else {
+            "unknown".to_string()
+        };
+        
+        // 对于数组切片，我们不需要检查维度匹配，因为切片会改变数组的维度
+        // 直接使用GetElementPtr指令处理
         
         // 创建临时变量
         let temp_operand_id = self.context.next_temp_id();
