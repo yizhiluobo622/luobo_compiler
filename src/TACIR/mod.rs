@@ -11,7 +11,12 @@ pub use crate::TACIR::ast_to_tacir::ConversionError;
 /// 便利函数：转换AST到三地址码IR
 pub fn convert_ast_to_tac(ast: &crate::frontend::ast::Ast) -> Result<TACProgram, ConversionError> {
     let mut converter = ASTToTACConverter::new();
-    converter.convert(ast)
+    let mut program = converter.convert(ast)?;
+    
+    // 处理全局数组初始化
+    program.process_global_array_initializations(converter.get_mapper());
+    
+    Ok(program)
 }
 
 /// 便利函数：打印三地址码IR

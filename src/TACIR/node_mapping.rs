@@ -2,6 +2,14 @@ use std::collections::HashMap;
 use crate::frontend::ast::Ast;
 use super::tacir::{Operand, TACInstruction};
 
+/// 全局数组初始化信息
+#[derive(Debug, Clone)]
+pub struct GlobalArrayInit {
+    pub array_name: String,
+    pub offset: usize,
+    pub value: Operand,
+}
+
 /// 节点映射器
 /// 负责管理AST节点到IR节点的映射关系
 pub struct NodeMapper {
@@ -13,6 +21,8 @@ pub struct NodeMapper {
     label_map: HashMap<String, String>,
     /// 数组变量名到维度的映射
     array_info: HashMap<String, Vec<usize>>,
+    /// 全局数组初始化信息
+    global_array_inits: Vec<GlobalArrayInit>,
 }
 
 impl NodeMapper {
@@ -22,6 +32,7 @@ impl NodeMapper {
             variable_map: HashMap::new(),
             label_map: HashMap::new(),
             array_info: HashMap::new(),
+            global_array_inits: Vec::new(),
         }
     }
     
@@ -83,6 +94,7 @@ impl NodeMapper {
         self.variable_map.clear();
         self.label_map.clear();
         self.array_info.clear();
+        // 注意：不清空全局数组初始化信息，因为它们是全局的
     }
     
     /// 获取映射统计信息
@@ -97,6 +109,25 @@ impl NodeMapper {
     /// 获取所有变量映射
     pub fn get_all_variables(&self) -> HashMap<String, Operand> {
         self.variable_map.clone()
+    }
+    
+    /// 添加全局数组初始化信息
+    pub fn add_global_array_init(&mut self, array_name: String, offset: usize, value: Operand) {
+        self.global_array_inits.push(GlobalArrayInit {
+            array_name,
+            offset,
+            value,
+        });
+    }
+    
+    /// 获取所有全局数组初始化信息
+    pub fn get_global_array_inits(&self) -> &Vec<GlobalArrayInit> {
+        &self.global_array_inits
+    }
+    
+    /// 清空全局数组初始化信息
+    pub fn clear_global_array_inits(&mut self) {
+        self.global_array_inits.clear();
     }
     
     /// 恢复变量映射

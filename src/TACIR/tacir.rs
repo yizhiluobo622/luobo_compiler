@@ -509,6 +509,44 @@ impl TACProgram {
     pub fn add_global_array_variable(&mut self, name: String, array_type: Type, dimensions: Vec<usize>) {
         self.global_array_variables.push((name, array_type, dimensions));
     }
+    
+    /// 处理全局数组初始化
+    pub fn process_global_array_initializations(&mut self, mapper: &crate::TACIR::node_mapping::NodeMapper) {
+        let global_inits = mapper.get_global_array_inits();
+        
+        if let Some(main_func) = self.get_main_function_mut() {
+            // 在main函数的开始处添加全局数组初始化指令
+            if let Some(first_block) = main_func.basic_blocks.first_mut() {
+                // 在第一个基本块的开始处插入初始化指令
+                let mut init_instructions = Vec::new();
+                
+                for init in global_inits {
+                    // 生成数组元素存储指令
+                    let array_operand = Operand::Variable(init.array_name.clone());
+                    let offset_operand = Operand::Constant(crate::TACIR::tacir::ConstantValue::Integer(init.offset as i64));
+                    
+                    // 计算数组元素地址
+                    let element_ptr = Operand::Variable(format!("t_global_init_{}", init.offset));
+                    init_instructions.push(TACInstruction::GetElementPtr {
+                        target: element_ptr.clone(),
+                        base: array_operand,
+                        indices: vec![offset_operand],
+                    });
+                    
+                    // 存储值到数组元素
+                    init_instructions.push(TACInstruction::Store {
+                        value: init.value.clone(),
+                        address: element_ptr,
+                    });
+                }
+                
+                // 将初始化指令插入到基本块开始处
+                for instruction in init_instructions.into_iter().rev() {
+                    first_block.instructions.insert(0, instruction);
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Display for TACProgram {

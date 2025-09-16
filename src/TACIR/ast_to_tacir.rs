@@ -139,6 +139,11 @@ impl ASTToTACConverter {
         }
     }
     
+    /// 获取mapper的引用
+    pub fn get_mapper(&self) -> &NodeMapper {
+        &self.mapper
+    }
+    
     /// 创建新的基本块
     fn create_new_block(&mut self) -> Result<BasicBlock, String> {
         let block_id = self.context.next_block_id();
@@ -547,10 +552,19 @@ impl ASTToTACConverter {
                             dimensions.clone()
                         );
                         // 同时也添加到全局变量列表中，因为它们是全局变量
+                        // 对于全局数组，如果有初始值，需要特殊处理
+                        let global_initial_value = if let Some(init_value) = initial_value {
+                            // 对于数组初始化，我们需要在后续处理中生成初始化指令
+                            // 这里先设置为None，后续在process_array_initialization中处理
+                            None
+                        } else {
+                            None
+                        };
+                        
                         program.add_global_variable(
                             variable_name.clone(),
                             variable_type.clone(),
-                            None,
+                            global_initial_value,
                             is_const
                         );
                     }
@@ -1161,33 +1175,161 @@ impl ASTToTACConverter {
             // 空初始化列表，不需要处理
             Ok(())
         } else {
-            // 获取数组维度信息
-            let array_info = self.get_array_info_cloned(variable_name);
-            let dimensions = if let Some((_, dims, _)) = array_info {
-                dims
-            } else {
-                // 如果没有维度信息，回退到简单处理
-                return self.process_simple_array_initialization(variable_name, elements, program);
-            };
+            // 检查是否为全局数组
+            let is_global_array = self.context.get_current_function().is_none();
             
-            // 处理初始化列表
-            for (i, element) in elements.iter().enumerate() {
-                // 检查元素是否是嵌套的初始化列表
-                if let AstKind::Expression(Expression::InitializerList { elements: nested_elements }) = &element.kind {
-                    // 递归处理嵌套的初始化列表
-                    // 对于嵌套列表，需要计算正确的多维索引
-                    self.process_nested_array_initialization_simple(variable_name, variable_type, nested_elements, i, &dimensions, program)?;
-                } else {
-                    // 单个值，生成数组元素存储指令
-                    let element_result = self.convert_ast_node(element, program)?;
-                    
-                    // 计算正确的索引
-                    let indices = self.calculate_array_indices(i, &dimensions);
-                    self.store_array_element(variable_name, &indices, element_result)?;
-                }
+            if is_global_array {
+                // 全局数组初始化：生成全局初始化指令
+                self.process_global_array_initialization(variable_name, variable_type, elements, program)?;
+            } else {
+                // 函数内数组初始化：使用原有逻辑
+                self.process_local_array_initialization(variable_name, variable_type, elements, program)?;
             }
             Ok(())
         }
+    }
+    
+    /// 处理全局数组初始化
+    fn process_global_array_initialization(
+        &mut self,
+        variable_name: &str,
+        variable_type: &Type,
+        elements: &[Ast],
+        program: &mut TACProgram,
+    ) -> Result<(), String> {
+        // 获取数组维度信息
+        let array_info = self.get_array_info_cloned(variable_name);
+        let dimensions = if let Some((_, dims, _)) = array_info {
+            dims
+        } else {
+            return Err(format!("无法获取数组 {} 的维度信息", variable_name));
+        };
+        
+        // 处理初始化列表
+        for (i, element) in elements.iter().enumerate() {
+            // 检查元素是否是嵌套的初始化列表
+            if let AstKind::Expression(Expression::InitializerList { elements: nested_elements }) = &element.kind {
+                // 递归处理嵌套的初始化列表
+                self.process_nested_global_array_initialization(variable_name, variable_type, nested_elements, i, &dimensions, program)?;
+            } else {
+                // 单个值，生成全局数组元素存储指令
+                let element_result = self.convert_ast_node(element, program)?;
+                
+                // 计算正确的索引
+                let indices = self.calculate_array_indices(i, &dimensions);
+                self.store_global_array_element(variable_name, &indices, element_result)?;
+            }
+        }
+        Ok(())
+    }
+    
+    /// 处理函数内数组初始化
+    fn process_local_array_initialization(
+        &mut self,
+        variable_name: &str,
+        variable_type: &Type,
+        elements: &[Ast],
+        program: &mut TACProgram,
+    ) -> Result<(), String> {
+        // 获取数组维度信息
+        let array_info = self.get_array_info_cloned(variable_name);
+        let dimensions = if let Some((_, dims, _)) = array_info {
+            dims
+        } else {
+            // 如果没有维度信息，回退到简单处理
+            return self.process_simple_array_initialization(variable_name, elements, program);
+        };
+        
+        // 处理初始化列表
+        for (i, element) in elements.iter().enumerate() {
+            // 检查元素是否是嵌套的初始化列表
+            if let AstKind::Expression(Expression::InitializerList { elements: nested_elements }) = &element.kind {
+                // 递归处理嵌套的初始化列表
+                // 对于嵌套列表，需要计算正确的多维索引
+                self.process_nested_array_initialization_simple(variable_name, variable_type, nested_elements, i, &dimensions, program)?;
+            } else {
+                // 单个值，生成数组元素存储指令
+                let element_result = self.convert_ast_node(element, program)?;
+                
+                // 计算正确的索引
+                let indices = self.calculate_array_indices(i, &dimensions);
+                self.store_array_element(variable_name, &indices, element_result)?;
+            }
+        }
+        Ok(())
+    }
+    
+    /// 处理嵌套的全局数组初始化列表
+    fn process_nested_global_array_initialization(
+        &mut self,
+        variable_name: &str,
+        variable_type: &Type,
+        elements: &[Ast],
+        outer_index: usize,
+        dimensions: &[usize],
+        program: &mut TACProgram,
+    ) -> Result<(), String> {
+        if elements.is_empty() {
+            Ok(())
+        } else {
+            for (j, element) in elements.iter().enumerate() {
+                let element_result = self.convert_ast_node(element, program)?;
+                
+                // 根据数组维度计算正确的索引
+                let indices = if dimensions.len() >= 2 {
+                    if dimensions.len() == 2 {
+                        vec![outer_index, j]
+                    } else if dimensions.len() == 3 {
+                        // 三维数组：outer_index 是第一维，j 是第二维
+                        vec![outer_index, j, 0] // 第三维默认为0
+                    } else {
+                        vec![outer_index, j]
+                    }
+                } else {
+                    vec![outer_index]
+                };
+                
+                self.store_global_array_element(variable_name, &indices, element_result)?;
+            }
+            Ok(())
+        }
+    }
+    
+    /// 存储全局数组元素
+    fn store_global_array_element(&mut self, variable_name: &str, indices: &[usize], value: Operand) -> Result<(), String> {
+        // 对于全局数组，我们需要在main函数开始时生成初始化指令
+        // 这里我们暂时将初始化信息存储起来，在main函数开始时处理
+        
+        // 获取数组信息
+        let array_info = self.get_array_info_cloned(variable_name);
+        if let Some((_, dimensions, _)) = array_info {
+            // 计算数组元素的地址偏移
+            let offset = self.calculate_global_array_offset(&dimensions, indices);
+            
+            // 将初始化信息存储到全局初始化列表中
+            // 这里我们需要修改TACProgram来支持全局初始化
+            // 暂时先记录到mapper中
+            self.mapper.add_global_array_init(variable_name.to_string(), offset, value);
+        }
+        Ok(())
+    }
+    
+    /// 计算全局数组的偏移量
+    fn calculate_global_array_offset(&self, dimensions: &[usize], indices: &[usize]) -> usize {
+        if dimensions.len() != indices.len() {
+            return 0;
+        }
+        
+        let mut offset = 0;
+        let mut multiplier = 1;
+        
+        // 从最后一个维度开始计算
+        for i in (0..dimensions.len()).rev() {
+            offset += indices[i] * multiplier;
+            multiplier *= dimensions[i];
+        }
+        
+        offset
     }
     
     /// 处理嵌套的数组初始化列表（修复版本）
