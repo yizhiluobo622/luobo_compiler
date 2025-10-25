@@ -816,33 +816,61 @@ impl ASTToTACConverter {
                 // 建立条件跳转的前驱后继关系
                 self.handle_conditional_jump_instruction(&then_label, &else_label)?;
                 
+                // 创建then分支的基本块
+                self.handle_label_instruction(&then_label)?;
+                
                 // 处理then分支
                 let then_result = self.convert_ast_node(then_branch, program)?;
                 
-                // 添加跳转到结束标签的指令
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Jump {
-                        label: end_label.clone(),
-                    });
-                }
+                // 检查当前块是否已经包含跳转指令（continue/break/return）
+                let need_jump_to_end = if let Some(block) = self.context.get_current_block() {
+                    !block.instructions.iter().any(|inst| matches!(inst, 
+                        TACInstruction::Jump { .. } | 
+                        TACInstruction::ConditionalJump { .. } | 
+                        TACInstruction::Return { .. }))
+                } else {
+                    true
+                };
                 
-                // 建立跳转的前驱后继关系
-                self.handle_jump_instruction(&end_label)?;
+                // 只有在没有其他跳转指令时才添加跳转到结束标签
+                if need_jump_to_end {
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        block.add_instruction(TACInstruction::Jump {
+                            label: end_label.clone(),
+                        });
+                    }
+                    
+                    // 建立跳转的前驱后继关系
+                    self.handle_jump_instruction(&end_label)?;
+                }
                 
                 // 处理else分支（如果存在）
                 if let Some(else_branch) = else_branch {
+                    // 创建else分支的基本块
+                    self.handle_label_instruction(&else_label)?;
                     let else_result = self.convert_ast_node(else_branch, program)?;
-                    // 这里可以合并结果，暂时返回then的结果
+                    
+                    // 检查else分支是否需要跳转到结束标签
+                    let need_else_jump = if let Some(block) = self.context.get_current_block() {
+                        !block.instructions.iter().any(|inst| matches!(inst, 
+                            TACInstruction::Jump { .. } | 
+                            TACInstruction::ConditionalJump { .. } | 
+                            TACInstruction::Return { .. }))
+                    } else {
+                        true
+                    };
+                    
+                    if need_else_jump {
+                        if let Some(block) = self.context.get_current_block_mut() {
+                            block.add_instruction(TACInstruction::Jump {
+                                label: end_label.clone(),
+                            });
+                        }
+                        self.handle_jump_instruction(&end_label)?;
+                    }
                 }
                 
-                // 添加结束标签
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Label {
-                        name: end_label.clone(),
-                    });
-                }
-                
-                // 处理标签指令，创建新块
+                // 处理结束标签，创建新块
                 self.handle_label_instruction(&end_label)?;
                 
                 Ok(then_result)
@@ -883,33 +911,61 @@ impl ASTToTACConverter {
                 // 建立条件跳转的前驱后继关系
                 self.handle_conditional_jump_instruction(&then_label, &else_label)?;
                 
+                // 创建then分支的基本块
+                self.handle_label_instruction(&then_label)?;
+                
                 // 处理then分支
                 let then_result = self.convert_ast_node(then_branch, program)?;
                 
-                // 添加跳转到结束标签的指令
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Jump {
-                        label: end_label.clone(),
-                    });
-                }
+                // 检查当前块是否已经包含跳转指令（continue/break/return）
+                let need_jump_to_end = if let Some(block) = self.context.get_current_block() {
+                    !block.instructions.iter().any(|inst| matches!(inst, 
+                        TACInstruction::Jump { .. } | 
+                        TACInstruction::ConditionalJump { .. } | 
+                        TACInstruction::Return { .. }))
+                } else {
+                    true
+                };
                 
-                // 建立跳转的前驱后继关系
-                self.handle_jump_instruction(&end_label)?;
+                // 只有在没有其他跳转指令时才添加跳转到结束标签
+                if need_jump_to_end {
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        block.add_instruction(TACInstruction::Jump {
+                            label: end_label.clone(),
+                        });
+                    }
+                    
+                    // 建立跳转的前驱后继关系
+                    self.handle_jump_instruction(&end_label)?;
+                }
                 
                 // 处理else分支（如果存在）
                 if let Some(else_branch) = else_branch {
+                    // 创建else分支的基本块
+                    self.handle_label_instruction(&else_label)?;
                     let else_result = self.convert_ast_node(else_branch, program)?;
-                    // 这里可以合并结果，暂时返回then的结果
+                    
+                    // 检查else分支是否需要跳转到结束标签
+                    let need_else_jump = if let Some(block) = self.context.get_current_block() {
+                        !block.instructions.iter().any(|inst| matches!(inst, 
+                            TACInstruction::Jump { .. } | 
+                            TACInstruction::ConditionalJump { .. } | 
+                            TACInstruction::Return { .. }))
+                    } else {
+                        true
+                    };
+                    
+                    if need_else_jump {
+                        if let Some(block) = self.context.get_current_block_mut() {
+                            block.add_instruction(TACInstruction::Jump {
+                                label: end_label.clone(),
+                            });
+                        }
+                        self.handle_jump_instruction(&end_label)?;
+                    }
                 }
                 
-                // 添加结束标签
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Label {
-                        name: end_label.clone(),
-                    });
-                }
-                
-                // 处理标签指令，创建新块
+                // 处理结束标签，创建新块
                 self.handle_label_instruction(&end_label)?;
                 
                 Ok(then_result)
@@ -935,14 +991,7 @@ impl ASTToTACConverter {
                     format!("loop_end_{}", self.context.block_counter)
                 };
                 
-                // 添加循环开始标签
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Label {
-                        name: loop_start_label.clone(),
-                    });
-                }
-                
-                // 处理标签指令，创建新块
+                // 处理循环开始标签，创建新块
                 self.handle_label_instruction(&loop_start_label)?;
                 
                 // 转换循环条件
@@ -960,6 +1009,9 @@ impl ASTToTACConverter {
                 // 建立条件跳转的前驱后继关系
                 self.handle_conditional_jump_instruction(&loop_body_label, &loop_end_label)?;
                 
+                // 创建循环体基本块
+                self.handle_label_instruction(&loop_body_label)?;
+                
                 // 推入循环上下文，continue跳转到循环开始，break跳转到循环结束
                 self.context.push_loop_context(loop_start_label.clone(), loop_end_label.clone());
                 
@@ -969,24 +1021,29 @@ impl ASTToTACConverter {
                 // 弹出循环上下文
                 self.context.pop_loop_context();
                 
-                // 添加跳转回循环开始标签的指令
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Jump {
-                        label: loop_start_label.clone(),
-                    });
+                // 检查循环体是否已经包含跳转指令（break/continue/return）
+                let need_loop_jump = if let Some(block) = self.context.get_current_block() {
+                    !block.instructions.iter().any(|inst| matches!(inst, 
+                        TACInstruction::Jump { .. } | 
+                        TACInstruction::ConditionalJump { .. } | 
+                        TACInstruction::Return { .. }))
+                } else {
+                    true
+                };
+                
+                // 只有在没有其他跳转指令时才添加跳转回循环开始
+                if need_loop_jump {
+                    if let Some(block) = self.context.get_current_block_mut() {
+                        block.add_instruction(TACInstruction::Jump {
+                            label: loop_start_label.clone(),
+                        });
+                    }
+                    
+                    // 处理跳转指令，建立块间关系
+                    self.handle_jump_instruction(&loop_start_label)?;
                 }
                 
-                // 处理跳转指令，建立块间关系
-                self.handle_jump_instruction(&loop_start_label)?;
-                
-                // 添加循环结束标签
-                if let Some(block) = self.context.get_current_block_mut() {
-                    block.add_instruction(TACInstruction::Label {
-                        name: loop_end_label.clone(),
-                    });
-                }
-                
-                // 处理标签指令，创建新块
+                // 处理循环结束标签，创建新块
                 self.handle_label_instruction(&loop_end_label)?;
                 
                 Ok(body_result)
