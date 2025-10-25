@@ -1,4 +1,4 @@
-use crate::frontend::ast::{Ast, AstKind, Expression, Type};
+use crate::frontend::ast::{Ast, AstKind, Expression, Type, BinaryOperator, Literal};
 use crate::frontend::span::Span;
 use crate::frontend::SemanticAnalyzer::symbol_table::SymbolTable;
 use crate::frontend::SemanticAnalyzer::type_system::TypeSystem;
@@ -50,8 +50,13 @@ impl ExprChecker {
                         self.check_identifier_use(name, &expr.span, symbol_table, errors);
                     }
                     Expression::BinaryOperation { operator, left_operand, right_operand } => {
-                        // 检查二元运算
-                        self.check_binary_operation(operator, left_operand, right_operand, symbol_table, type_system, errors);
+                        // 先进行冗余比较优化
+                        let optimized_expr = self.optimize_redundant_comparisons(expr);
+                        
+                        // 检查优化后的二元运算
+                        if let AstKind::Expression(Expression::BinaryOperation { operator, left_operand, right_operand }) = &optimized_expr.kind {
+                            self.check_binary_operation(operator, left_operand, right_operand, symbol_table, type_system, errors);
+                        }
                     }
                     Expression::UnaryOperation { operator, operand } => {
                         // 检查一元运算
@@ -611,6 +616,53 @@ impl ExprChecker {
                 crate::frontend::ast::Literal::IntegerLiteral(value)
             )) => Ok(*value),
             _ => Err("非常量表达式".to_string()),
+        }
+    }
+    
+    /// 优化冗余的比较操作
+    /// 
+    /// 检测并优化连续的 != 0 比较，如：
+    /// x != 0 != 0 != .0 != 0. -> x != 0
+    fn optimize_redundant_comparisons(&self, expr: &Ast) -> Ast {
+        match &expr.kind {
+            AstKind::Expression(Expression::BinaryOperation { 
+                operator: BinaryOperator::NotEqual, 
+                left_operand, 
+                right_operand 
+            }) => {
+                // 检查右操作数是否为0
+                if self.is_zero_literal(right_operand) {
+                    // 检查左操作数是否也是 != 0 比较
+                    if let AstKind::Expression(Expression::BinaryOperation { 
+                        operator: BinaryOperator::NotEqual, 
+                        left_operand: nested_left, 
+                        right_operand: nested_right 
+                    }) = &left_operand.kind {
+                        if self.is_zero_literal(nested_right) {
+                            // 递归优化嵌套的 != 0 比较
+                            return self.optimize_redundant_comparisons(left_operand);
+                        }
+                    }
+                }
+                
+                // 如果无法优化，返回原表达式
+                expr.clone()
+            }
+            _ => expr.clone(),
+        }
+    }
+    
+    /// 检查表达式是否为0字面量
+    fn is_zero_literal(&self, expr: &Ast) -> bool {
+        match &expr.kind {
+            AstKind::Expression(Expression::Literal(literal)) => {
+                match literal {
+                    Literal::IntegerLiteral(0) => true,
+                    Literal::FloatLiteral(0.0) => true,
+                    _ => false,
+                }
+            }
+            _ => false,
         }
     }
 }

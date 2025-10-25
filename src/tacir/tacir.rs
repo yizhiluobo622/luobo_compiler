@@ -511,7 +511,7 @@ impl TACProgram {
     }
     
     /// 处理全局数组初始化
-    pub fn process_global_array_initializations(&mut self, mapper: &crate::TACIR::node_mapping::NodeMapper) {
+    pub fn process_global_array_initializations(&mut self, mapper: &crate::tacir::node_mapping::NodeMapper) {
         let global_inits = mapper.get_global_array_inits();
         
         if let Some(main_func) = self.get_main_function_mut() {
@@ -523,7 +523,7 @@ impl TACProgram {
                 for init in global_inits {
                     // 生成数组元素存储指令
                     let array_operand = Operand::Variable(init.array_name.clone());
-                    let offset_operand = Operand::Constant(crate::TACIR::tacir::ConstantValue::Integer(init.offset as i64));
+                    let offset_operand = Operand::Constant(crate::tacir::tacir::ConstantValue::Integer(init.offset as i64));
                     
                     // 计算数组元素地址
                     let element_ptr = Operand::Variable(format!("t_global_init_{}", init.offset));

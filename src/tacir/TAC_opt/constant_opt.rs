@@ -1,4 +1,4 @@
-use crate::TACIR::tacir::{TACProgram, TACFunction, BasicBlock, TACInstruction, Operand, ConstantValue, BinaryOperator, UnaryOperator};
+use crate::tacir::tacir::{TACProgram, TACFunction, BasicBlock, TACInstruction, Operand, ConstantValue, BinaryOperator, UnaryOperator};
 use super::{OptimizationPass, OptimizationResult, OptimizationStats};
 use std::collections::{HashMap, HashSet, VecDeque, BTreeMap};
 
@@ -913,7 +913,7 @@ impl ConstantOptimizationPass {
 }
 
 impl OptimizationPass for ConstantOptimizationPass {
-    fn run(&mut self, program: &mut crate::TACIR::TACProgram) -> Result<OptimizationResult, String> {
+    fn run(&mut self, program: &mut crate::tacir::TACProgram) -> Result<OptimizationResult, String> {
         // 重置统计和状态
         self.stats = OptimizationStats::new();
         self.global_constants.clear();

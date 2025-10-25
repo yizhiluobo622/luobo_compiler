@@ -6,7 +6,7 @@ pub mod TAC_opt;
 pub use tacir::*;
 pub use node_mapping::*;
 pub use ast_to_tacir::*;
-pub use crate::TACIR::ast_to_tacir::ConversionError;
+pub use crate::tacir::ast_to_tacir::ConversionError;
 
 /// 便利函数：转换AST到三地址码IR
 pub fn convert_ast_to_tac(ast: &crate::frontend::ast::Ast) -> Result<TACProgram, ConversionError> {

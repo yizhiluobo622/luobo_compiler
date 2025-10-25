@@ -29,6 +29,15 @@ impl From<String> for ConversionError {
     }
 }
 
+/// 循环上下文信息
+#[derive(Debug, Clone)]
+pub struct LoopContext {
+    /// continue标签（循环开始位置）
+    pub continue_label: String,
+    /// break标签（循环结束位置）
+    pub break_label: String,
+}
+
 /// 转换上下文，管理转换过程中的可变状态
 pub struct ConversionContext {
     /// 当前函数
@@ -41,6 +50,8 @@ pub struct ConversionContext {
     pub label_to_block: HashMap<String, usize>,
     /// 当前基本块的ID
     pub current_block_id: usize,
+    /// 循环标签栈
+    pub loop_stack: Vec<LoopContext>,
 }
 
 impl ConversionContext {
@@ -51,6 +62,7 @@ impl ConversionContext {
             block_counter: 0,
             label_to_block: HashMap::new(),
             current_block_id: 0,
+            loop_stack: Vec::new(),
         }
     }
     
@@ -120,6 +132,29 @@ impl ConversionContext {
     /// 获取当前基本块ID
     pub fn get_current_block_id(&self) -> usize {
         self.current_block_id
+    }
+    
+    /// 推入循环上下文
+    pub fn push_loop_context(&mut self, continue_label: String, break_label: String) {
+        self.loop_stack.push(LoopContext {
+            continue_label,
+            break_label,
+        });
+    }
+    
+    /// 弹出循环上下文
+    pub fn pop_loop_context(&mut self) -> Option<LoopContext> {
+        self.loop_stack.pop()
+    }
+    
+    /// 获取当前循环的continue标签
+    pub fn get_current_continue_label(&self) -> Option<&String> {
+        self.loop_stack.last().map(|ctx| &ctx.continue_label)
+    }
+    
+    /// 获取当前循环的break标签
+    pub fn get_current_break_label(&self) -> Option<&String> {
+        self.loop_stack.last().map(|ctx| &ctx.break_label)
     }
 }
 
@@ -263,6 +298,28 @@ impl ASTToTACConverter {
         Ok(())
     }
     
+    /// 处理条件跳转指令，建立到两个目标块的关系
+    fn handle_conditional_jump_instruction(&mut self, true_label: &str, false_label: &str) -> Result<(), String> {
+        // 处理true分支的跳转
+        self.handle_jump_instruction(true_label)?;
+        // 处理false分支的跳转
+        self.handle_jump_instruction(false_label)?;
+        Ok(())
+    }
+    
+    /// 获取常量值
+    fn get_constant_value(&self, const_name: &str, program: &TACProgram) -> Option<usize> {
+        // 从全局变量中查找常量值
+        for (name, var_type, initial_value, is_const) in &program.global_variables {
+            if name == const_name && *is_const {
+                if let Some(Operand::Constant(ConstantValue::Integer(value))) = initial_value {
+                    return Some(*value as usize);
+                }
+            }
+        }
+        None
+    }
+    
     /// 从AST推断数组维度
     /// 仅依赖语义分析阶段填充的 deduced_type，不做变量名启发式
     fn infer_array_dimensions_from_ast(&self, ast: &crate::frontend::ast::Ast, _variable_name: &str) -> Vec<usize> {
@@ -307,8 +364,6 @@ impl ASTToTACConverter {
             AstKind::Program { functions, global_variables } => {
                 // 处理全局变量
                 for var_decl in global_variables {
-                    if let AstKind::VariableDeclaration { variable_name, variable_type, is_const, .. } = &var_decl.kind {
-                    }
                     if let AstKind::VariableDeclaration { is_const, .. } = &var_decl.kind {
                         self.convert_variable_declaration_with_const_info(var_decl, program, *is_const)?;
                     }
@@ -510,27 +565,68 @@ impl ASTToTACConverter {
             // 处理数组类型
             if let crate::frontend::ast::Type::ArrayType { element_type, array_size } = variable_type {
                 // 如果是数组类型，添加到数组变量列表
-                let dimensions = if let crate::frontend::ast::ArraySize::Fixed(size) = array_size {
-                    // 如果array_size是确定值，直接使用
-                    let mut dims: Vec<usize> = vec![*size];
-                    let mut current_type = element_type;
-                    
-                    // 处理多维数组
-                    while let Type::ArrayType { element_type: inner_type, array_size: inner_size } = current_type.as_ref() {
-                        if let crate::frontend::ast::ArraySize::Fixed(inner_size_val) = inner_size {
-                            dims.push(*inner_size_val);
-                            current_type = inner_type;
+                let dimensions = match array_size {
+                    crate::frontend::ast::ArraySize::Fixed(size) => {
+                        // 如果array_size是确定值，直接使用
+                        let mut dims: Vec<usize> = vec![*size];
+                        let mut current_type = element_type;
+                        
+                        // 处理多维数组
+                        while let Type::ArrayType { element_type: inner_type, array_size: inner_size } = current_type.as_ref() {
+                            match inner_size {
+                                crate::frontend::ast::ArraySize::Fixed(inner_size_val) => {
+                                    dims.push(*inner_size_val);
+                                    current_type = inner_type;
+                                }
+                                crate::frontend::ast::ArraySize::Constant(const_name) => {
+                                    // 查找常量值，从程序全局变量中获取
+                                    if let Some(const_value) = self.get_constant_value(const_name, program) {
+                                        dims.push(const_value);
+                                        current_type = inner_type;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                _ => break,
+                            }
+                        }
+                        dims
+                    }
+                    crate::frontend::ast::ArraySize::Constant(const_name) => {
+                        // 处理常量大小
+                        if let Some(const_value) = self.get_constant_value(const_name, program) {
+                            let mut dims: Vec<usize> = vec![const_value];
+                            let mut current_type = element_type;
+                            
+                            // 处理多维数组
+                            while let Type::ArrayType { element_type: inner_type, array_size: inner_size } = current_type.as_ref() {
+                                match inner_size {
+                                    crate::frontend::ast::ArraySize::Fixed(inner_size_val) => {
+                                        dims.push(*inner_size_val);
+                                        current_type = inner_type;
+                                    }
+                                    crate::frontend::ast::ArraySize::Constant(inner_const_name) => {
+                                        if let Some(inner_const_value) = self.get_constant_value(inner_const_name, program) {
+                                            dims.push(inner_const_value);
+                                            current_type = inner_type;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            dims
                         } else {
-                            break;
+                            // 未知常量，返回空
+                            Vec::new()
                         }
                     }
-                    dims
-                } else {
-                    // 如果array_size不是确定值，仅从AST语义信息获取维度（不做启发式）
-                    let inferred_dimensions = self.infer_array_dimensions_from_ast(&ast, variable_name);
-                    if inferred_dimensions.is_empty() {
+                    _ => {
+                        // 其他情况，尝试从语义信息推断
+                        let inferred_dimensions = self.infer_array_dimensions_from_ast(&ast, variable_name);
+                        inferred_dimensions
                     }
-                    inferred_dimensions
                 };
                 
                 if !dimensions.is_empty() {
@@ -551,22 +647,7 @@ impl ASTToTACConverter {
                             variable_type.clone(),
                             dimensions.clone()
                         );
-                        // 同时也添加到全局变量列表中，因为它们是全局变量
-                        // 对于全局数组，如果有初始值，需要特殊处理
-                        let global_initial_value = if let Some(init_value) = initial_value {
-                            // 对于数组初始化，我们需要在后续处理中生成初始化指令
-                            // 这里先设置为None，后续在process_array_initialization中处理
-                            None
-                        } else {
-                            None
-                        };
-                        
-                        program.add_global_variable(
-                            variable_name.clone(),
-                            variable_type.clone(),
-                            global_initial_value,
-                            is_const
-                        );
+                        // 全局数组变量不需要重复添加到普通全局变量列表中
                     }
                     
                     // 保存数组信息到mapper中，供后续使用
@@ -708,19 +789,19 @@ impl ASTToTACConverter {
                 let then_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "then".to_string()
+                    format!("then_{}", self.context.block_counter)
                 };
                 
                 let else_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "else".to_string()
+                    format!("else_{}", self.context.block_counter)
                 };
                 
                 let end_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "end".to_string()
+                    format!("end_{}", self.context.block_counter)
                 };
                 
                 // 添加条件跳转指令
@@ -732,6 +813,9 @@ impl ASTToTACConverter {
                     });
                 }
                 
+                // 建立条件跳转的前驱后继关系
+                self.handle_conditional_jump_instruction(&then_label, &else_label)?;
+                
                 // 处理then分支
                 let then_result = self.convert_ast_node(then_branch, program)?;
                 
@@ -741,6 +825,9 @@ impl ASTToTACConverter {
                         label: end_label.clone(),
                     });
                 }
+                
+                // 建立跳转的前驱后继关系
+                self.handle_jump_instruction(&end_label)?;
                 
                 // 处理else分支（如果存在）
                 if let Some(else_branch) = else_branch {
@@ -769,19 +856,19 @@ impl ASTToTACConverter {
                 let then_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "then".to_string()
+                    format!("then_{}", self.context.block_counter)
                 };
                 
                 let else_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "else".to_string()
+                    format!("else_{}", self.context.block_counter)
                 };
                 
                 let end_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "end".to_string()
+                    format!("end_{}", self.context.block_counter)
                 };
                 
                 // 添加条件跳转指令
@@ -793,6 +880,9 @@ impl ASTToTACConverter {
                     });
                 }
                 
+                // 建立条件跳转的前驱后继关系
+                self.handle_conditional_jump_instruction(&then_label, &else_label)?;
+                
                 // 处理then分支
                 let then_result = self.convert_ast_node(then_branch, program)?;
                 
@@ -802,6 +892,9 @@ impl ASTToTACConverter {
                         label: end_label.clone(),
                     });
                 }
+                
+                // 建立跳转的前驱后继关系
+                self.handle_jump_instruction(&end_label)?;
                 
                 // 处理else分支（如果存在）
                 if let Some(else_branch) = else_branch {
@@ -827,19 +920,19 @@ impl ASTToTACConverter {
                 let loop_start_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "loop_start".to_string()
+                    format!("loop_start_{}", self.context.block_counter)
                 };
                 
                 let loop_body_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "loop_body".to_string()
+                    format!("loop_body_{}", self.context.block_counter)
                 };
                 
                 let loop_end_label = if let Some(func) = self.context.get_current_function_mut() {
                     func.new_label()
                 } else {
-                    "loop_end".to_string()
+                    format!("loop_end_{}", self.context.block_counter)
                 };
                 
                 // 添加循环开始标签
@@ -864,8 +957,17 @@ impl ASTToTACConverter {
                     });
                 }
                 
+                // 建立条件跳转的前驱后继关系
+                self.handle_conditional_jump_instruction(&loop_body_label, &loop_end_label)?;
+                
+                // 推入循环上下文，continue跳转到循环开始，break跳转到循环结束
+                self.context.push_loop_context(loop_start_label.clone(), loop_end_label.clone());
+                
                 // 处理循环体
                 let body_result = self.convert_ast_node(body, program)?;
+                
+                // 弹出循环上下文
+                self.context.pop_loop_context();
                 
                 // 添加跳转回循环开始标签的指令
                 if let Some(block) = self.context.get_current_block_mut() {
@@ -892,30 +994,40 @@ impl ASTToTACConverter {
             
             Statement::Break => {
                 // 转换break语句
-                // 注意：这里需要知道break应该跳转到哪个标签
-                // 暂时使用一个占位符标签，实际实现需要更复杂的标签管理
-                let break_label = "break_target".to_string();
+                let break_label = if let Some(label) = self.context.get_current_break_label() {
+                    label.clone()
+                } else {
+                    return Err("break语句不在循环内".to_string());
+                };
                 
                 if let Some(block) = self.context.get_current_block_mut() {
                     block.add_instruction(TACInstruction::Jump {
-                        label: break_label,
+                        label: break_label.clone(),
                     });
                 }
+                
+                // 建立跳转的前驱后继关系
+                self.handle_jump_instruction(&break_label)?;
                 
                 Ok(Operand::Constant(ConstantValue::Integer(0)))
             }
             
             Statement::Continue => {
                 // 转换continue语句
-                // 注意：这里需要知道continue应该跳转到哪个标签
-                // 暂时使用一个占位符标签，实际实现需要更复杂的标签管理
-                let continue_label = "continue_target".to_string();
+                let continue_label = if let Some(label) = self.context.get_current_continue_label() {
+                    label.clone()
+                } else {
+                    return Err("continue语句不在循环内".to_string());
+                };
                 
                 if let Some(block) = self.context.get_current_block_mut() {
                     block.add_instruction(TACInstruction::Jump {
-                        label: continue_label,
+                        label: continue_label.clone(),
                     });
                 }
+                
+                // 建立跳转的前驱后继关系
+                self.handle_jump_instruction(&continue_label)?;
                 
                 Ok(Operand::Constant(ConstantValue::Integer(0)))
             }
@@ -961,9 +1073,28 @@ impl ASTToTACConverter {
             }
             
             Expression::BinaryOperation { operator, left_operand, right_operand } => {
-                // 递归转换左右操作数
-                let left_result = self.convert_ast_node(left_operand, program)?;
-                let right_result = self.convert_ast_node(right_operand, program)?;
+                // 先进行冗余比较优化
+                let optimized_expr = self.optimize_redundant_comparisons(&Ast::new(
+                    AstKind::Expression(Expression::BinaryOperation {
+                        operator: operator.clone(),
+                        left_operand: left_operand.clone(),
+                        right_operand: right_operand.clone(),
+                    }),
+                    left_operand.span.clone()
+                ));
+                
+                // 从优化后的表达式提取操作数
+                let (final_operator, final_left, final_right) = if let AstKind::Expression(Expression::BinaryOperation { 
+                    operator, left_operand, right_operand 
+                }) = &optimized_expr.kind {
+                    (operator, left_operand, right_operand)
+                } else {
+                    (operator, left_operand, right_operand)
+                };
+                
+                // 递归转换优化后的左右操作数
+                let left_result = self.convert_ast_node(final_left, program)?;
+                let right_result = self.convert_ast_node(final_right, program)?;
                 
                 // 创建临时变量存储结果
                 let temp_operand = if let Some(func) = self.context.get_current_function_mut() {
@@ -1070,8 +1201,7 @@ impl ASTToTACConverter {
                     let outer_index_result = self.convert_ast_node(index, program)?;
                     indices.push(outer_index_result);
                     
-                    // 反转索引顺序
-                    indices.reverse();
+                    // 索引顺序已经正确，无需反转
                     
                     // 获取数组变量
                     let array_result = self.convert_ast_node(current_array, program)?;
@@ -1722,8 +1852,8 @@ impl ASTToTACConverter {
         let outer_index_result = self.convert_ast_node(index, program)?;
         indices.push(outer_index_result);
         
-        // 反转索引顺序，使其从最外层到最内层
-        indices.reverse();
+        // 索引顺序已经正确：从最外层到最内层
+        // 无需反转
         
         // 获取数组变量
         let array_result = self.convert_ast_node(current_array, program)?;
@@ -1760,5 +1890,52 @@ impl ASTToTACConverter {
         }
         
         Ok(temp_operand)
+    }
+    
+    /// 优化冗余的比较操作
+    /// 
+    /// 检测并优化连续的 != 0 比较，如：
+    /// x != 0 != 0 != .0 != 0. -> x != 0
+    fn optimize_redundant_comparisons(&self, expr: &Ast) -> Ast {
+        match &expr.kind {
+            AstKind::Expression(Expression::BinaryOperation { 
+                operator: BinaryOperator::NotEqual, 
+                left_operand, 
+                right_operand 
+            }) => {
+                // 检查右操作数是否为0
+                if self.is_zero_literal(right_operand) {
+                    // 检查左操作数是否也是 != 0 比较
+                    if let AstKind::Expression(Expression::BinaryOperation { 
+                        operator: BinaryOperator::NotEqual, 
+                        left_operand: nested_left, 
+                        right_operand: nested_right 
+                    }) = &left_operand.kind {
+                        if self.is_zero_literal(nested_right) {
+                            // 递归优化嵌套的 != 0 比较
+                            return self.optimize_redundant_comparisons(left_operand);
+                        }
+                    }
+                }
+                
+                // 如果无法优化，返回原表达式
+                expr.clone()
+            }
+            _ => expr.clone(),
+        }
+    }
+    
+    /// 检查表达式是否为0字面量
+    fn is_zero_literal(&self, expr: &Ast) -> bool {
+        match &expr.kind {
+            AstKind::Expression(Expression::Literal(literal)) => {
+                match literal {
+                    Literal::IntegerLiteral(0) => true,
+                    Literal::FloatLiteral(0.0) => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
     }
 }

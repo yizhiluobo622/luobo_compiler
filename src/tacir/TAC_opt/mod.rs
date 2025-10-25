@@ -11,7 +11,7 @@ pub use utils::*;
 /// 优化Pass trait
 pub trait OptimizationPass {
     /// 运行优化
-    fn run(&mut self, program: &mut crate::TACIR::TACProgram) -> Result<OptimizationResult, String>;
+    fn run(&mut self, program: &mut crate::tacir::TACProgram) -> Result<OptimizationResult, String>;
     
     /// 获取Pass名称
     fn name(&self) -> &str;
@@ -73,7 +73,7 @@ impl OptimizationStats {
 }
 
 /// 运行所有优化Pass
-pub fn run_all_optimizations(program: &mut crate::TACIR::TACProgram) -> Result<Vec<OptimizationResult>, String> {
+pub fn run_all_optimizations(program: &mut crate::tacir::TACProgram) -> Result<Vec<OptimizationResult>, String> {
     let mut results = Vec::new();
     
     // 运行内联优化（最先执行）
@@ -111,7 +111,7 @@ pub fn run_all_optimizations(program: &mut crate::TACIR::TACProgram) -> Result<V
 }
 
 /// 在内联优化后重建IR结构
-fn rebuild_ir_after_inline(program: &mut crate::TACIR::TACProgram) -> Result<(), String> {
+fn rebuild_ir_after_inline(program: &mut crate::tacir::TACProgram) -> Result<(), String> {
     println!("🔧 重建IR结构...");
     
     for function in &mut program.functions {
@@ -142,7 +142,7 @@ fn rebuild_ir_after_inline(program: &mut crate::TACIR::TACProgram) -> Result<(),
 }
 
 /// 验证函数完整性
-fn validate_function_integrity(function: &crate::TACIR::TACFunction) -> Result<(), String> {
+fn validate_function_integrity(function: &crate::tacir::TACFunction) -> Result<(), String> {
     let mut valid_ids = std::collections::HashSet::new();
     
     // 收集所有有效的基本块ID
@@ -167,7 +167,7 @@ fn validate_function_integrity(function: &crate::TACIR::TACFunction) -> Result<(
 }
 
 /// 重新构建函数的CFG
-fn rebuild_function_cfg(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
+fn rebuild_function_cfg(function: &mut crate::tacir::TACFunction) -> Result<(), String> {
     // 先收集所有标签到基本块ID的映射
     let mut label_to_block_id = std::collections::HashMap::new();
     for block in &function.basic_blocks {
@@ -189,13 +189,13 @@ fn rebuild_function_cfg(function: &mut crate::TACIR::TACFunction) -> Result<(), 
         // 分析指令中的跳转
         for instruction in &block.instructions {
             match instruction {
-                crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                crate::tacir::tacir::TACInstruction::Jump { label } => {
                     // 根据标签找到目标基本块
                     if let Some(&target_block_id) = label_to_block_id.get(label) {
                         successors.push(target_block_id);
                     }
                 }
-                crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                crate::tacir::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
                     // 根据标签找到目标基本块
                     if let Some(&target_block_id) = label_to_block_id.get(true_label) {
                         successors.push(target_block_id);
@@ -234,7 +234,7 @@ fn rebuild_function_cfg(function: &mut crate::TACIR::TACFunction) -> Result<(), 
 }
 
 /// 清理无效的引用
-fn cleanup_invalid_references(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
+fn cleanup_invalid_references(function: &mut crate::tacir::TACFunction) -> Result<(), String> {
     let mut cleaned_count = 0;
     
     // 先收集所有有效的基本块ID
@@ -259,7 +259,7 @@ fn cleanup_invalid_references(function: &mut crate::TACIR::TACFunction) -> Resul
 }
 
 /// 修复内联优化后的CFG
-fn fix_cfg_after_inline(program: &mut crate::TACIR::TACProgram) -> Result<(), String> {
+fn fix_cfg_after_inline(program: &mut crate::tacir::TACProgram) -> Result<(), String> {
     println!("🔧 内联优化后重建IR结构...");
     
     for function in &mut program.functions {
@@ -287,7 +287,7 @@ fn fix_cfg_after_inline(program: &mut crate::TACIR::TACProgram) -> Result<(), St
 }
 
 /// 重新分配基本块ID，确保连续性
-fn reassign_block_ids(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
+fn reassign_block_ids(function: &mut crate::tacir::TACFunction) -> Result<(), String> {
     // 先清理所有前驱后继关系，因为内联后这些关系可能无效
     for block in &mut function.basic_blocks {
         block.predecessors.clear();
@@ -319,7 +319,7 @@ fn reassign_block_ids(function: &mut crate::TACIR::TACFunction) -> Result<(), St
 }
 
 /// 更新所有跳转指令的目标
-fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
+fn update_all_jumps(function: &mut crate::tacir::TACFunction) -> Result<(), String> {
     // 验证所有跳转指令的标签都是有效的
     let mut label_to_block_id = std::collections::HashMap::new();
     
@@ -335,12 +335,12 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
     for block in &function.basic_blocks {
         for instruction in &block.instructions {
             match instruction {
-                crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                crate::tacir::tacir::TACInstruction::Jump { label } => {
                     if !label_to_block_id.contains_key(label) {
                         invalid_labels.push((block.id, "Jump", label.clone()));
                     }
                 }
-                crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                crate::tacir::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
                     if !label_to_block_id.contains_key(true_label) {
                         invalid_labels.push((block.id, "ConditionalJump", true_label.clone()));
                     }
@@ -364,7 +364,7 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
         for block in &mut function.basic_blocks {
             for instruction in &mut block.instructions {
                 match instruction {
-                    crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                    crate::tacir::tacir::TACInstruction::Jump { label } => {
                         if !label_to_block_id.contains_key(label) {
                             // 尝试找到最接近的有效标签
                             if let Some(valid_label) = find_closest_valid_label(label, &label_to_block_id.keys().cloned().collect()) {
@@ -373,7 +373,7 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
                             }
                         }
                     }
-                    crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                    crate::tacir::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
                         if !label_to_block_id.contains_key(true_label) {
                             if let Some(valid_label) = find_closest_valid_label(true_label, &label_to_block_id.keys().cloned().collect()) {
                                 *true_label = valid_label;
@@ -397,7 +397,7 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
         for block in &mut function.basic_blocks {
             for instruction in &mut block.instructions {
                 match instruction {
-                    crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                    crate::tacir::tacir::TACInstruction::Jump { label } => {
                         // 检查是否跳转到自己
                         if let Some(block_label) = &block.label {
                             if label == block_label {
@@ -409,7 +409,7 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
                             }
                         }
                     }
-                    crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                    crate::tacir::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
                         // 检查条件跳转是否跳转到自己
                         if let Some(block_label) = &block.label {
                             if true_label == block_label {
@@ -446,7 +446,7 @@ fn update_all_jumps(function: &mut crate::TACIR::TACFunction) -> Result<(), Stri
 }
 
 /// 清理无效的跳转指令和空的基本块
-fn cleanup_invalid_jumps(function: &mut crate::TACIR::tacir::TACFunction) -> Result<(), String> {
+fn cleanup_invalid_jumps(function: &mut crate::tacir::tacir::TACFunction) -> Result<(), String> {
     // 收集所有有效的标签
     let mut valid_labels = std::collections::HashSet::new();
     for block in &function.basic_blocks {
@@ -461,10 +461,10 @@ fn cleanup_invalid_jumps(function: &mut crate::TACIR::tacir::TACFunction) -> Res
         let mut i = 0;
         while i < block.instructions.len() {
             let should_remove = match &block.instructions[i] {
-                crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                crate::tacir::tacir::TACInstruction::Jump { label } => {
                     !valid_labels.contains(label)
                 }
-                crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                crate::tacir::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
                     !valid_labels.contains(true_label) || !valid_labels.contains(false_label)
                 }
                 _ => false,
@@ -495,13 +495,13 @@ fn cleanup_invalid_jumps(function: &mut crate::TACIR::tacir::TACFunction) -> Res
             for other_block in &function.basic_blocks {
                 for instruction in &other_block.instructions {
                     match instruction {
-                        crate::TACIR::tacir::TACInstruction::Jump { label: jump_label } => {
+                        crate::tacir::tacir::TACInstruction::Jump { label: jump_label } => {
                             if jump_label == label {
                                 is_referenced = true;
                                 break;
                             }
                         }
-                        crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                        crate::tacir::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
                             if true_label == label || false_label == label {
                                 is_referenced = true;
                                 break;
@@ -538,7 +538,7 @@ fn cleanup_invalid_jumps(function: &mut crate::TACIR::tacir::TACFunction) -> Res
 }
 
 /// 为基本块分配标签
-fn assign_labels_to_blocks(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
+fn assign_labels_to_blocks(function: &mut crate::tacir::TACFunction) -> Result<(), String> {
     // 为所有基本块重新分配标签，确保唯一性
     let mut next_label_id = 0;
     for block in &mut function.basic_blocks {
@@ -551,7 +551,7 @@ fn assign_labels_to_blocks(function: &mut crate::TACIR::TACFunction) -> Result<(
 }
 
 /// 修复跳转指令中的标签引用
-fn fix_jump_labels(function: &mut crate::TACIR::TACFunction) -> Result<(), String> {
+fn fix_jump_labels(function: &mut crate::tacir::TACFunction) -> Result<(), String> {
     // 收集所有有效的标签
     let mut valid_labels = std::collections::HashSet::new();
     for block in &function.basic_blocks {
@@ -565,7 +565,7 @@ fn fix_jump_labels(function: &mut crate::TACIR::TACFunction) -> Result<(), Strin
     for block in &mut function.basic_blocks {
         for instruction in &mut block.instructions {
             match instruction {
-                crate::TACIR::tacir::TACInstruction::Jump { label } => {
+                crate::tacir::tacir::TACInstruction::Jump { label } => {
                     if !valid_labels.contains(label) {
                         // 如果标签无效，尝试找到最接近的有效标签
                         if let Some(valid_label) = find_closest_valid_label(label, &valid_labels) {
@@ -574,7 +574,7 @@ fn fix_jump_labels(function: &mut crate::TACIR::TACFunction) -> Result<(), Strin
                         }
                     }
                 }
-                crate::TACIR::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
+                crate::tacir::tacir::TACInstruction::ConditionalJump { true_label, false_label, .. } => {
                     if !valid_labels.contains(true_label) {
                         if let Some(valid_label) = find_closest_valid_label(true_label, &valid_labels) {
                             *true_label = valid_label;

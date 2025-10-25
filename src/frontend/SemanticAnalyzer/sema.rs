@@ -111,6 +111,20 @@ impl SemanticAnalyzer {
             vec![Type::IntType],
             Span::start_only(0, 0, 0, 0),
         );
+        // starttime: () -> void (开始计时)
+        let _ = self.symbol_table.add_function(
+            "starttime",
+            Type::VoidType,
+            vec![],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // stoptime: () -> void (结束计时)
+        let _ = self.symbol_table.add_function(
+            "stoptime",
+            Type::VoidType,
+            vec![],
+            Span::start_only(0, 0, 0, 0),
+        );
         // getarray: (int[]) -> void (读取数组)
         let _ = self.symbol_table.add_function(
             "getarray",
@@ -133,6 +147,42 @@ impl SemanticAnalyzer {
             "putfloat",
             Type::VoidType,
             vec![Type::FloatType],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // putfarray: (int, float[]) -> void (输出浮点数组)
+        let _ = self.symbol_table.add_function(
+            "putfarray",
+            Type::VoidType,
+            vec![
+                Type::IntType,
+                Type::ArrayType { 
+                    element_type: Box::new(Type::FloatType),
+                    array_size: crate::frontend::ast::ArraySize::Unspecified
+                }
+            ],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // putarray: (int, int[]) -> void (输出整型数组)
+        let _ = self.symbol_table.add_function(
+            "putarray",
+            Type::VoidType,
+            vec![
+                Type::IntType,
+                Type::ArrayType { 
+                    element_type: Box::new(Type::IntType),
+                    array_size: crate::frontend::ast::ArraySize::Unspecified
+                }
+            ],
+            Span::start_only(0, 0, 0, 0),
+        );
+        // getfarray: (float[]) -> void (读取浮点数组)
+        let _ = self.symbol_table.add_function(
+            "getfarray",
+            Type::VoidType,
+            vec![Type::ArrayType { 
+                element_type: Box::new(Type::FloatType),
+                array_size: crate::frontend::ast::ArraySize::Unspecified
+            }],
             Span::start_only(0, 0, 0, 0),
         );
     }

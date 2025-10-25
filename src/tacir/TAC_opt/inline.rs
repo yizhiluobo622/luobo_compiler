@@ -1,5 +1,5 @@
-use crate::TACIR::tacir::{TACInstruction, TACProgram, TACFunction, BasicBlock, Operand, ConstantValue, BinaryOperator, UnaryOperator};
-use crate::TACIR::TAC_opt::{OptimizationPass, OptimizationResult, OptimizationStats};
+use crate::tacir::tacir::{TACInstruction, TACProgram, TACFunction, BasicBlock, Operand, ConstantValue, BinaryOperator, UnaryOperator};
+use crate::tacir::TAC_opt::{OptimizationPass, OptimizationResult, OptimizationStats};
 use std::collections::{HashMap, HashSet};
 
 /// 内联优化Pass

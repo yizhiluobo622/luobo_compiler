@@ -1,26 +1,45 @@
 use std::path::PathBuf;
-use std::path::Path;
-use std::collections::HashMap;
-use std::fs;
 use clap::Parser as ClapParser;
-use crate::frontend::lexer::Lexer;
-use crate::frontend::parser::Parser;
 mod frontend;
 mod for_test;
-mod TACIR;
+mod tacir;
+
+// 使用示例:
+// 基本用法:
+//   cargo run -- input.sy
+//   ./target/debug/luobo_compiler input.sy
+//
+// 指定输出文件:
+//   cargo run -- -o my_program.out input.sy
+//   ./target/debug/luobo_compiler -o my_program.out input.sy
+//
+// 指定优化级别:
+//   cargo run -- -O 2 input.sy
+//   ./target/debug/luobo_compiler -O 2 input.sy
+//
+// 组合使用:
+//   cargo run -- -o optimized_program.out -O 3 input.sy
+//   ./target/debug/luobo_compiler -o optimized_program.out -O 3 input.sy
+//
+// 显示结构化IR示例:
+//   cargo run -- --show-structured-ir input.sy
+//
+// 查看帮助:
+//   cargo run -- --help
+//   ./target/debug/luobo_compiler --help
+
 #[derive(ClapParser, Debug)]
 #[command(author, version, about)]
-
 struct Args {
     /// Input source file
-    input: PathBuf,
+    input: Option<PathBuf>,
     
     /// Output file
     #[arg(short, long, default_value = "a.out")]
     output: PathBuf,
     
     /// Optimization level (0-3)
-    #[arg(short, long, default_value = "0")]
+    #[arg(short = 'O', long, default_value = "0")]
     optimize: u8,
     
     /// Show structured IR example
@@ -32,181 +51,142 @@ fn main() {
     let args = Args::parse();
     
     if args.show_structured_ir {
-       
+        show_structured_ir_example();
         return;
     }
     
-   
+    // 检查是否提供了输入文件
+    let input_path = match &args.input {
+        Some(path) => path,
+        None => {
+            eprintln!("❌ 错误: 请提供输入源文件");
+            eprintln!("使用 --help 查看使用方法");
+            std::process::exit(1);
+        }
+    };
+    
+    // 执行完整的编译流程
+    match compile(input_path, &args) {
+        Ok(()) => {
+            println!("✅ 编译完成: {} -> {}", input_path.display(), args.output.display());
+        }
+        Err(e) => {
+            eprintln!("❌ 编译失败: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
-#[test]
-fn print_span_test(){
-    
-        println!("🧪 AST构建批量测试开始...");
-        
-        let test_dir = "Code/sy/HFunc/src";
-        let mut results = HashMap::new();
-        let mut total_tests = 0;
-        let mut passed_tests = 0;
-        
-        // 检查测试目录是否存在
-        if !Path::new(test_dir).exists() {
-            println!("❌ 错误: 测试目录 {} 不存在", test_dir);
-            return;
-        }
-        
-        // 收集所有测试文件并按编号排序
-        let mut test_files = Vec::new();
-        
-        if let Ok(entries) = fs::read_dir(test_dir) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if let Some(extension) = path.extension() {
-                        if extension == "sy" {
-                            if let Some(file_name) = path.file_name() {
-                                let file_name_str = file_name.to_string_lossy().to_string();
-                                test_files.push((path, file_name_str));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 按文件名中的数字编号排序
-        test_files.sort_by(|a, b| {
-            let a_name = &a.1;
-            let b_name = &b.1;
-            
-            // 提取文件名中的数字编号
-            let a_num = extract_number(a_name);
-            let b_num = extract_number(b_name);
-            
-            // 按数字编号排序
-            a_num.cmp(&b_num)
-        });
-        
-        println!("📋 找到 {} 个测试文件，按编号顺序测试:", test_files.len());
-        
-        // 按排序后的顺序运行测试
-        for (path, file_name) in &test_files {
-            total_tests += 1;
-            
-            println!("📄 测试文件 [{}/{}]: {}", total_tests, test_files.len(), file_name);
-            
-            // 读取文件内容
-            match fs::read_to_string(&path) {
-                Ok(content) => {
-                    // 创建词法分析器
-                    let lexer = Lexer::new(&content);
-                    let mut parser = Parser::new(lexer);
-                    
-                    // 尝试解析
-                    match parser.parse() {
-                        Ok(ast) => {
-                            println!("  ✅ 解析成功 - AST节点数: {}", count_ast_nodes(&ast));
-                            results.insert(file_name, "PASS".to_string());
-                            passed_tests += 1;
-                        }
-                        Err(errors) => {
-                            println!("  ❌ 解析失败 - {} 个错误", errors.len());
-                            for (i, error) in errors.iter().enumerate() {
-                                println!("    错误 {}: {} (位置: {:?})", 
-                                    i + 1, error.message, error.span);
-                            }
-                            results.insert(file_name, "FAIL".to_string());
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("  ❌ 读取文件失败: {}", e);
-                    results.insert(file_name, "ERROR".to_string());
-                }
-            }
-        }
-        
-        // 生成测试报告
-        println!("\n📊 测试结果汇总:");
-        println!("总测试数: {}", total_tests);
-        println!("通过测试: {}", passed_tests);
-        println!("失败测试: {}", total_tests - passed_tests);
-        println!("成功率: {:.1}%", (passed_tests as f64 / total_tests as f64) * 100.0);
-        
-        // 保存详细报告
-        let mut report = String::new();
-        report.push_str("AST构建批量测试报告\n");
-        report.push_str("==================\n\n");
-        report.push_str(&format!("总测试数: {}\n", total_tests));
-        report.push_str(&format!("通过测试: {}\n", passed_tests));
-        report.push_str(&format!("失败测试: {}\n", total_tests - passed_tests));
-        report.push_str(&format!("成功率: {:.1}%\n\n", (passed_tests as f64 / total_tests as f64) * 100.0));
-        
-        report.push_str("详细结果 (按编号顺序):\n");
-        report.push_str("------------------------\n");
-        
-        // 按编号顺序输出结果
-        let mut sorted_results: Vec<_> = results.iter().collect();
-        sorted_results.sort_by(|a, b| {
-            let a_num = extract_number(a.0);
-            let b_num = extract_number(b.0);
-            a_num.cmp(&b_num)
-        });
-        
-        for (file, result) in sorted_results {
-            report.push_str(&format!("{}: {}\n", file, result));
-        }
-        
-        if let Err(e) = fs::write("test_ast_report.txt", report) {
-            println!("❌ 保存报告失败: {}", e);
-        } else {
-            println!("📄 详细报告已保存到 test_ast_report.txt");
-        }
-    }
-    
-    /// 从文件名中提取数字编号
-    fn extract_number(filename: &str) -> i32 {
-        // 移除文件扩展名
-        let name_without_ext = filename.replace(".sy", "");
-        
-        // 查找文件名开头的数字
-        let mut num_str = String::new();
-        for c in name_without_ext.chars() {
-            if c.is_digit(10) {
-                num_str.push(c);
-            } else {
-                break;
-            }
-        }
-        
-        // 解析数字，如果失败则返回0
-        num_str.parse::<i32>().unwrap_or(0)
-    }
-    
-    fn count_ast_nodes(ast: &crate::frontend::ast::Ast) -> usize {
-        // 简单的AST节点计数函数
-        // 这里可以根据需要实现更复杂的统计
-        1 + match &ast.kind {
-            crate::frontend::ast::AstKind::Program { functions, global_variables } => {
-                functions.iter().map(count_ast_nodes).sum::<usize>() +
-                global_variables.iter().map(count_ast_nodes).sum::<usize>()
-            }
-            crate::frontend::ast::AstKind::Function { function_body, .. } => {
-                count_ast_nodes(function_body)
-            }
-            crate::frontend::ast::AstKind::Statement(statement) => {
-                match statement {
-                    crate::frontend::ast::Statement::Compound { statements } => {
-                        statements.iter().map(count_ast_nodes).sum::<usize>()
-                    }
-                    crate::frontend::ast::Statement::ExpressionStatement { expression } => {
-                        count_ast_nodes(expression)
-                    }
-                    _ => 0
-                }
-            }
-            crate::frontend::ast::AstKind::Expression(_) => 0,
-            _ => 0
-        }
 
+/// 完整的编译流程
+fn compile(input_path: &std::path::Path, args: &Args) -> Result<(), String> {
+    println!("🚀 开始编译: {}", input_path.display());
+    
+    // 1. 读取源文件
+    let source_content = std::fs::read_to_string(input_path)
+        .map_err(|e| format!("无法读取源文件 '{}': {}", input_path.display(), e))?;
+    
+    println!("📖 源文件读取完成，长度: {} 字节", source_content.len());
+    
+    // 2. 词法分析和语法分析
+    println!("🔍 开始词法分析...");
+    let lexer = frontend::lexer::Lexer::new(&source_content);
+    println!("✅ 词法分析完成");
+    
+    // 3. 语法分析
+    println!("🌳 开始语法分析...");
+    let mut parser = frontend::parser::Parser::new(lexer);
+    let ast = parser.parse()
+        .map_err(|e| format!("语法分析失败: {:?}", e))?;
+    println!("✅ 语法分析完成，生成AST");
+    
+    // 4. 语义分析
+    println!("🔍 开始语义分析...");
+    let semantic_ast = frontend::semantic_analysis::analyze_ast_with_semantic_info(ast)
+        .map_err(|e| format!("语义分析失败: {:?}", e))?;
+    println!("✅ 语义分析完成");
+    
+    // 5. TAC IR生成
+    println!("🔧 开始TAC IR生成...");
+    let mut tac_program = tacir::convert_ast_to_tac(&semantic_ast)
+        .map_err(|e| format!("TAC IR生成失败: {:?}", e))?;
+    println!("✅ TAC IR生成完成");
+    
+    // 6. 优化处理
+    if args.optimize > 0 {
+        println!("⚡ 开始优化处理 (级别: {})...", args.optimize);
+        run_optimizations(&mut tac_program, args.optimize)?;
+        println!("✅ 优化处理完成");
+    } else {
+        println!("⏭️ 跳过优化处理 (优化级别为0)");
+    }
+    
+    // 7. 代码生成 (暂时输出TAC IR到文件)
+    println!("📝 开始代码生成...");
+    generate_output(&tac_program, &args.output)?;
+    println!("✅ 代码生成完成");
+    
+    Ok(())
+}
+
+/// 运行优化处理
+fn run_optimizations(program: &mut tacir::TACProgram, level: u8) -> Result<(), String> {
+    match level {
+        0 => {
+            // 无优化
+        }
+        1 => {
+            // 基本优化：常量折叠
+            println!("🔧 运行基本优化...");
+            let mut constant_pass = tacir::TAC_opt::ConstantOptimizationPass::new();
+            constant_pass.run(program)?;
+        }
+        2 => {
+            // 中等优化：常量 + 代数
+            println!("🔧 运行中等优化...");
+            let mut constant_pass = tacir::TAC_opt::ConstantOptimizationPass::new();
+            constant_pass.run(program)?;
+            
+            let mut algebraic_pass = tacir::TAC_opt::AlgebraicOptimizationPass::new();
+            algebraic_pass.run(program)?;
+        }
+        3 | _ => {
+            // 完整优化：使用已有的优化管道
+            println!("🔧 运行完整优化...");
+            tacir::TAC_opt::run_all_optimizations(program)?;
+        }
+    }
+    
+    Ok(())
+}
+
+/// 生成输出代码
+fn generate_output(program: &tacir::TACProgram, output_path: &std::path::Path) -> Result<(), String> {
+    // 暂时输出TAC IR格式，未来可扩展为LLVM IR或汇编
+    let tac_output = format!("{}", program);
+    
+    std::fs::write(output_path, tac_output)
+        .map_err(|e| format!("无法写入输出文件 '{}': {}", output_path.display(), e))?;
+    
+    Ok(())
+}
+
+/// 显示结构化IR示例
+fn show_structured_ir_example() {
+    println!("📊 TAC IR 结构化示例:");
+    println!("================================");
+    println!("Global Variables:");
+    println!("  n: IntType = 10");
+    println!();
+    println!("Functions:");
+    println!("  Function 0: main");
+    println!("  Return Type: IntType");
+    println!("  Parameters: []");
+    println!("  Basic Blocks:");
+    println!("    Block 0:");
+    println!("      0: t0 = call getint()");
+    println!("      1: n = t0");
+    println!("      2: t1 = call putint(n)");
+    println!("      3: return 0");
+    println!("================================");
 }
 

@@ -1,4 +1,4 @@
-use crate::TACIR::tacir::{TACProgram, TACFunction, BasicBlock, TACInstruction, Operand, ConstantValue};
+use crate::tacir::tacir::{TACProgram, TACFunction, BasicBlock, TACInstruction, Operand, ConstantValue};
 use std::collections::{HashMap, HashSet};
 
 /// 函数分析信息
